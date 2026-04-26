@@ -1,3 +1,6 @@
+[alias]
+rr = "run --release"
+
 [target.thumbv8m.main-none-eabihf]
 # Choose a default "cargo run" tool (see README for more info)
 # - `probe-rs` provides flashing and defmt via a hardware debugger, and stack unwind on panic

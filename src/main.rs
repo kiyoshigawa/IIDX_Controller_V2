@@ -19,7 +19,6 @@
 use core::cell::RefCell;
 use core::fmt::Write;
 use core::sync::atomic::{AtomicI32, Ordering};
-
 use critical_section::Mutex;
 use defmt::info;
 use defmt_rtt as _;
@@ -30,10 +29,8 @@ use embedded_graphics::{
     text::{Baseline, Text},
 };
 use embedded_hal::digital::*;
-use fugit::{ExtU32, RateExtU32};
+use fugit::RateExtU32;
 use panic_probe as _;
-use rp235x_hal::pac::dma::TIMER0;
-use rp235x_hal::pac::powman::TIMER;
 use rp235x_hal::timer::{CopyableTimer0, Timer};
 use rp235x_hal::{
     self as hal, Clock, I2C,
@@ -49,7 +46,7 @@ use usb_device::{class_prelude::*, prelude::*};
 use usbd_human_interface_device::{page::Keyboard, prelude::*};
 
 /// The number of GPIO pins being used as buttons, both for the keyboard peripheral and for the control panel.
-const NUM_BUTTONS: usize = 24;
+const NUM_BUTTONS: usize = 27;
 
 /// Default debounce time in ticks (1,000,000 ticks per second)
 const DEFAULT_DEBOUNCE_TICKS: u64 = 10_000;
@@ -61,23 +58,19 @@ const USB_TICK_INTERVAL_TICKS: u64 = 1_000;
 /// Default keyboard send rate in ticks (1,000,000 ticks per second)
 const USB_SEND_INTERVAL_TICKS: u64 = 1_000;
 
-//stack size for core 1: increase as needed
+/// oled sreen min ticks between refreshes. (1,000,000 ticks per second)
+const SCREEN_REFRESH_TICKS: u64 = 100_000; //10Hz
+
+/// stack size for core 1: increase as needed, defaulting to 32k of our 512k chip memory (with 2MB psram chip available as well)
 static CORE_STACK_1: Stack<32768> = Stack::new();
+
+/// size for the FmtBuf buffer in bytes. Screen can only hold ~14 chars per line, so it can be small for us
+const BUF_SIZE: usize = 16;
 
 /// Tell the Boot ROM about our application:
 #[unsafe(link_section = ".start_block")]
 #[used]
 pub static IMAGE_DEF: hal::block::ImageDef = hal::block::ImageDef::secure_exe();
-
-// struct for storing simple button info to make iterative upating easier:
-pub struct ButtonState {
-    pub name: &'static str,
-    pub pin: Pin<DynPinId, FunctionSioInput, PullUp>,
-    pub last_update_ticks: u64,
-    pub debounce_ticks: u64,
-    pub key: Option<Keyboard>,
-    pub is_pressed: bool,
-}
 
 #[entry]
 fn main() -> ! {
@@ -129,247 +122,185 @@ fn main() -> ! {
 
     // Pin Setup/state array for all NKRO key pins and control center buttons:
     let mut buttons: [ButtonState; NUM_BUTTONS] = [
-        ButtonState {
-            name: "P1_1",
-            pin: pins.gpio0.into_pull_up_input().into_dyn_pin(),
-            last_update_ticks: 0,
-            debounce_ticks: DEFAULT_DEBOUNCE_TICKS,
-            key: Some(Keyboard::A),
-            is_pressed: false,
-        },
-        ButtonState {
-            name: "P1_2",
-            pin: pins.gpio1.into_pull_up_input().into_dyn_pin(),
-            last_update_ticks: 0,
-            debounce_ticks: DEFAULT_DEBOUNCE_TICKS,
-            key: Some(Keyboard::B),
-            is_pressed: false,
-        },
-        ButtonState {
-            name: "P1_3",
-            pin: pins.gpio2.into_pull_up_input().into_dyn_pin(),
-            last_update_ticks: 0,
-            debounce_ticks: DEFAULT_DEBOUNCE_TICKS,
-            key: Some(Keyboard::C),
-            is_pressed: false,
-        },
-        ButtonState {
-            name: "P1_4",
-            pin: pins.gpio3.into_pull_up_input().into_dyn_pin(),
-            last_update_ticks: 0,
-            debounce_ticks: DEFAULT_DEBOUNCE_TICKS,
-            key: Some(Keyboard::D),
-            is_pressed: false,
-        },
-        ButtonState {
-            name: "P1_5",
-            pin: pins.gpio4.into_pull_up_input().into_dyn_pin(),
-            last_update_ticks: 0,
-            debounce_ticks: DEFAULT_DEBOUNCE_TICKS,
-            key: Some(Keyboard::E),
-            is_pressed: false,
-        },
-        ButtonState {
-            name: "P1_6",
-            pin: pins.gpio5.into_pull_up_input().into_dyn_pin(),
-            last_update_ticks: 0,
-            debounce_ticks: DEFAULT_DEBOUNCE_TICKS,
-            key: Some(Keyboard::F),
-            is_pressed: false,
-        },
-        ButtonState {
-            name: "P1_7",
-            pin: pins.gpio6.into_pull_up_input().into_dyn_pin(),
-            last_update_ticks: 0,
-            debounce_ticks: DEFAULT_DEBOUNCE_TICKS,
-            key: Some(Keyboard::G),
-            is_pressed: false,
-        },
-        ButtonState {
-            name: "P1_Start",
-            pin: pins.gpio7.into_pull_up_input().into_dyn_pin(),
-            last_update_ticks: 0,
-            debounce_ticks: DEFAULT_DEBOUNCE_TICKS,
-            key: Some(Keyboard::H),
-            is_pressed: false,
-        },
-        ButtonState {
-            name: "P1_Select",
-            pin: pins.gpio8.into_pull_up_input().into_dyn_pin(),
-            last_update_ticks: 0,
-            debounce_ticks: DEFAULT_DEBOUNCE_TICKS,
-            key: Some(Keyboard::I),
-            is_pressed: false,
-        },
-        ButtonState {
-            name: "P2_1",
-            pin: pins.gpio9.into_pull_up_input().into_dyn_pin(),
-            last_update_ticks: 0,
-            debounce_ticks: DEFAULT_DEBOUNCE_TICKS,
-            key: Some(Keyboard::J),
-            is_pressed: false,
-        },
-        ButtonState {
-            name: "P2_2",
-            pin: pins.gpio10.into_pull_up_input().into_dyn_pin(),
-            last_update_ticks: 0,
-            debounce_ticks: DEFAULT_DEBOUNCE_TICKS,
-            key: Some(Keyboard::K),
-            is_pressed: false,
-        },
-        ButtonState {
-            name: "P2_3",
-            pin: pins.gpio11.into_pull_up_input().into_dyn_pin(),
-            last_update_ticks: 0,
-            debounce_ticks: DEFAULT_DEBOUNCE_TICKS,
-            key: Some(Keyboard::L),
-            is_pressed: false,
-        },
-        ButtonState {
-            name: "P2_4",
-            pin: pins.gpio12.into_pull_up_input().into_dyn_pin(),
-            last_update_ticks: 0,
-            debounce_ticks: DEFAULT_DEBOUNCE_TICKS,
-            key: Some(Keyboard::M),
-            is_pressed: false,
-        },
-        ButtonState {
-            name: "P2_5",
-            pin: pins.gpio13.into_pull_up_input().into_dyn_pin(),
-            last_update_ticks: 0,
-            debounce_ticks: DEFAULT_DEBOUNCE_TICKS,
-            key: Some(Keyboard::N),
-            is_pressed: false,
-        },
-        ButtonState {
-            name: "P2_6",
-            pin: pins.gpio14.into_pull_up_input().into_dyn_pin(),
-            last_update_ticks: 0,
-            debounce_ticks: DEFAULT_DEBOUNCE_TICKS,
-            key: Some(Keyboard::O),
-            is_pressed: false,
-        },
-        ButtonState {
-            name: "P2_7",
-            pin: pins.gpio15.into_pull_up_input().into_dyn_pin(),
-            last_update_ticks: 0,
-            debounce_ticks: DEFAULT_DEBOUNCE_TICKS,
-            key: Some(Keyboard::P),
-            is_pressed: false,
-        },
-        ButtonState {
-            name: "P2_Start",
-            pin: pins.gpio16.into_pull_up_input().into_dyn_pin(),
-            last_update_ticks: 0,
-            debounce_ticks: DEFAULT_DEBOUNCE_TICKS,
-            key: Some(Keyboard::Q),
-            is_pressed: false,
-        },
-        ButtonState {
-            name: "P2_Select",
-            pin: pins.gpio17.into_pull_up_input().into_dyn_pin(),
-            last_update_ticks: 0,
-            debounce_ticks: DEFAULT_DEBOUNCE_TICKS,
-            key: Some(Keyboard::R),
-            is_pressed: false,
-        },
-        ButtonState {
-            name: "Escape",
-            pin: pins.gpio18.into_pull_up_input().into_dyn_pin(),
-            last_update_ticks: 0,
-            debounce_ticks: DEFAULT_DEBOUNCE_TICKS,
-            key: Some(Keyboard::Escape),
-            is_pressed: false,
-        },
-        ButtonState {
-            name: "CC_Up",
-            pin: pins.gpio19.into_pull_up_input().into_dyn_pin(),
-            last_update_ticks: 0,
-            debounce_ticks: DEFAULT_DEBOUNCE_TICKS,
-            key: None,
-            is_pressed: false,
-        },
-        ButtonState {
-            name: "CC_Down",
-            pin: pins.gpio20.into_pull_up_input().into_dyn_pin(),
-            last_update_ticks: 0,
-            debounce_ticks: DEFAULT_DEBOUNCE_TICKS,
-            key: None,
-            is_pressed: false,
-        },
-        ButtonState {
-            name: "CC_Left",
-            pin: pins.gpio21.into_pull_up_input().into_dyn_pin(),
-            last_update_ticks: 0,
-            debounce_ticks: DEFAULT_DEBOUNCE_TICKS,
-            key: None,
-            is_pressed: false,
-        },
-        ButtonState {
-            name: "CC_Right",
-            pin: pins.gpio22.into_pull_up_input().into_dyn_pin(),
-            last_update_ticks: 0,
-            debounce_ticks: DEFAULT_DEBOUNCE_TICKS,
-            key: None,
-            is_pressed: false,
-        },
-        ButtonState {
-            name: "CC_Select",
-            pin: pins.gpio23.into_pull_up_input().into_dyn_pin(),
-            last_update_ticks: 0,
-            debounce_ticks: DEFAULT_DEBOUNCE_TICKS,
-            key: None,
-            is_pressed: false,
-        },
+        ButtonState::new(
+            "P1_1",
+            pins.gpio0.into_pull_up_input().into_dyn_pin(),
+            Some(Keyboard::Z),
+        ),
+        ButtonState::new(
+            "P1_2",
+            pins.gpio1.into_pull_up_input().into_dyn_pin(),
+            Some(Keyboard::S),
+        ),
+        ButtonState::new(
+            "P1_3",
+            pins.gpio2.into_pull_up_input().into_dyn_pin(),
+            Some(Keyboard::X),
+        ),
+        ButtonState::new(
+            "P1_4",
+            pins.gpio3.into_pull_up_input().into_dyn_pin(),
+            Some(Keyboard::D),
+        ),
+        ButtonState::new(
+            "P1_5",
+            pins.gpio4.into_pull_up_input().into_dyn_pin(),
+            Some(Keyboard::C),
+        ),
+        ButtonState::new(
+            "P1_6",
+            pins.gpio5.into_pull_up_input().into_dyn_pin(),
+            Some(Keyboard::F),
+        ),
+        ButtonState::new(
+            "P1_7",
+            pins.gpio6.into_pull_up_input().into_dyn_pin(),
+            Some(Keyboard::V),
+        ),
+        ButtonState::new(
+            "P1_Start",
+            pins.gpio7.into_pull_up_input().into_dyn_pin(),
+            Some(Keyboard::Grave),
+        ),
+        ButtonState::new(
+            "P1_Select",
+            pins.gpio8.into_pull_up_input().into_dyn_pin(),
+            Some(Keyboard::Keyboard1),
+        ),
+        ButtonState::new(
+            "P2_1",
+            pins.gpio9.into_pull_up_input().into_dyn_pin(),
+            Some(Keyboard::M),
+        ),
+        ButtonState::new(
+            "P2_2",
+            pins.gpio10.into_pull_up_input().into_dyn_pin(),
+            Some(Keyboard::K),
+        ),
+        ButtonState::new(
+            "P2_3",
+            pins.gpio11.into_pull_up_input().into_dyn_pin(),
+            Some(Keyboard::Comma),
+        ),
+        ButtonState::new(
+            "P2_4",
+            pins.gpio12.into_pull_up_input().into_dyn_pin(),
+            Some(Keyboard::L),
+        ),
+        ButtonState::new(
+            "P2_5",
+            pins.gpio13.into_pull_up_input().into_dyn_pin(),
+            Some(Keyboard::Dot),
+        ),
+        ButtonState::new(
+            "P2_6",
+            pins.gpio14.into_pull_up_input().into_dyn_pin(),
+            Some(Keyboard::Semicolon),
+        ),
+        ButtonState::new(
+            "P2_7",
+            pins.gpio15.into_pull_up_input().into_dyn_pin(),
+            Some(Keyboard::ForwardSlash),
+        ),
+        ButtonState::new(
+            "P2_Start",
+            pins.gpio16.into_pull_up_input().into_dyn_pin(),
+            Some(Keyboard::DeleteBackspace),
+        ),
+        ButtonState::new(
+            "P2_Select",
+            pins.gpio17.into_pull_up_input().into_dyn_pin(),
+            Some(Keyboard::Equal),
+        ),
+        ButtonState::new(
+            "Escape",
+            pins.gpio18.into_pull_up_input().into_dyn_pin(),
+            Some(Keyboard::Escape),
+        ),
+        ButtonState::new(
+            "CC_Up",
+            pins.gpio19.into_pull_up_input().into_dyn_pin(),
+            None,
+        ),
+        ButtonState::new(
+            "CC_Down",
+            pins.gpio20.into_pull_up_input().into_dyn_pin(),
+            None,
+        ),
+        ButtonState::new(
+            "CC_Left",
+            pins.gpio21.into_pull_up_input().into_dyn_pin(),
+            None,
+        ),
+        ButtonState::new(
+            "CC_Right",
+            pins.gpio22.into_pull_up_input().into_dyn_pin(),
+            None,
+        ),
+        ButtonState::new(
+            "CC_Select",
+            pins.gpio23.into_pull_up_input().into_dyn_pin(),
+            None,
+        ),
+        ButtonState::new(
+            "Volume Up",
+            pins.gpio24.into_pull_up_input().into_dyn_pin(),
+            Some(Keyboard::VolumeUp),
+        ),
+        ButtonState::new(
+            "Volume Down",
+            pins.gpio25.into_pull_up_input().into_dyn_pin(),
+            Some(Keyboard::VolumeDown),
+        ),
+        ButtonState::new(
+            "Mute",
+            pins.gpio26.into_pull_up_input().into_dyn_pin(),
+            Some(Keyboard::Mute),
+        ),
     ];
 
-    // encoder pins:
-    let _p1_encoder_pin_a = pins.gpio24.into_pull_up_input();
-    let _p1_encoder_pin_b = pins.gpio25.into_pull_up_input();
-    let _p2_encoder_pin_a = pins.gpio26.into_pull_up_input();
-    let _p2_encoder_pin_b = pins.gpio27.into_pull_up_input();
-
     // LED strip control pin
-    let _led_strip_data_pin = pins.gpio28.into_push_pull_output();
+    let _led_strip_data_pin = pins.gpio27.into_push_pull_output();
 
-    //currently unused pins reserved for future:
-    let _unused_pin_29 = pins.gpio29.into_pull_down_disabled();
-    let _unused_pin_30 = pins.gpio30.into_pull_down_disabled();
-    let _unused_pin_31 = pins.gpio31.into_pull_down_disabled();
+    //SPI bus pins using SPI1 device: (reserved for future peripherals, not currently in use)
+    let _spi_rx_pin = pins.gpio28.into_pull_down_disabled();
+    let _spi_cs_pin = pins.gpio29.into_pull_down_disabled();
+    let _spi_sck_pin = pins.gpio30.into_pull_down_disabled();
+    let _spi_tx_pin = pins.gpio31.into_pull_down_disabled();
 
-    //SPI bus pins: (reserved for future peripherals, not currently in use)
-    let _spi_rx_pin = pins.gpio32.into_pull_down_disabled();
-    let _spi_cs_pin = pins.gpio33.into_pull_down_disabled();
-    let _spi_sck_pin = pins.gpio34.into_pull_down_disabled();
-    let _spi_tx_pin = pins.gpio35.into_pull_down_disabled();
+    //i2c bus pins usinf i2c0 device:
+    let i2c_sda_pin = pins.gpio32.reconfigure();
+    let i2c_scl_pin = pins.gpio33.reconfigure();
 
-    //i2c bus pins:
-    let oled_sda_pin = pins.gpio36.reconfigure();
-    let oled_scl_pin = pins.gpio37.reconfigure();
+    // encoder pins:
+    let _p1_encoder_pin_a = pins.gpio34.into_pull_up_input();
+    let _p1_encoder_pin_b = pins.gpio35.into_pull_up_input();
+    let _p2_encoder_pin_a = pins.gpio36.into_pull_up_input();
+    let _p2_encoder_pin_b = pins.gpio37.into_pull_up_input();
 
     // heartbeat LEDs
     let mut heartbeat_led_pin_core1 = pins.gpio38.into_push_pull_output();
-    let mut heartbeat_led_pin_core0 = pins.gpio39.into_push_pull_output();
-
-    // DPS ADC pins:
-    // let _dsp_left_channel_in_pin = hal::adc::AdcPin::new(pins.gpio40).unwrap();
-    // let _dsp_right_channel_in_pin = hal::adc::AdcPin::new(pins.gpio41).unwrap();
+    let mut heartbeat_led_pin_core0 = pins.gpio39.into_push_pull_output(); // this is the led on the waveshare board
 
     //currently unused pins reserved for future:
+    let _unused_pin_40 = pins.gpio40.into_pull_down_disabled();
+    let _unused_pin_41 = pins.gpio41.into_pull_down_disabled();
     let _unused_pin_42 = pins.gpio42.into_pull_down_disabled();
     let _unused_pin_43 = pins.gpio43.into_pull_down_disabled();
     let _unused_pin_44 = pins.gpio44.into_pull_down_disabled();
-    let _unused_pin_45 = pins.gpio45.into_pull_down_disabled();
-    let _unused_pin_46 = pins.gpio46.into_pull_down_disabled();
+
+    // DPS ADC pins:
+    // let _dsp_left_channel_in_pin = hal::adc::AdcPin::new(pins.gpio45).unwrap();
+    // let _dsp_right_channel_in_pin = hal::adc::AdcPin::new(pins.gpio46).unwrap();
 
     // pin 47 is being used for the psram cable select according to the Waveshare docs
     // Therefore it can't be used by us for anything.
 
-    //i2c peripheral setup:
+    // i2c peripheral setup:
     let i2c = I2C::i2c0(
         pac.I2C0,
-        oled_sda_pin,
-        oled_scl_pin,
+        i2c_sda_pin,
+        i2c_scl_pin,
         400.kHz(),
         &mut pac.RESETS,
         clocks.system_clock.freq(),
@@ -381,7 +312,6 @@ fn main() -> ! {
             usbd_human_interface_device::device::keyboard::NKROBootKeyboardConfig::default(),
         )
         .build(&usb_bus);
-
     //https://pid.codes
     let mut usb_dev = UsbDeviceBuilder::new(&usb_bus, UsbVidPid(0x1209, 0x0001))
         .strings(&[StringDescriptors::default()
@@ -391,17 +321,35 @@ fn main() -> ! {
         .unwrap()
         .build();
 
-    //Start second core and begin its program loop:
+    // i2c SD1306 oled setup:
+    // I also make 4 text buffers to use to writ the 4 viible lines of text on the screen
+    let interface = ssd1306::I2CDisplayInterface::new(i2c);
+    let mut display = Ssd1306::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
+        .into_buffered_graphics_mode();
+    display.init().unwrap();
+    let text_style = MonoTextStyleBuilder::new()
+        .font(&FONT_9X18_BOLD)
+        .text_color(BinaryColor::On)
+        .build();
+    // Array of four 64 byte text buffers. Each buffer will be a line of text on the oled
+    let mut line_bufs: [FmtBuf; 4] = [FmtBuf::new(), FmtBuf::new(), FmtBuf::new(), FmtBuf::new()];
+
+    //Start second core (core1) and begin its program loop:
     core1
         .spawn(CORE_STACK_1.take().unwrap(), move || {
             let _core = unsafe { cortex_m::Peripherals::steal() };
             info!("Core1 Program Start!");
-            // Second core exclusive setup goes here:
+            // core1 exclusive setup goes here:
+            // Use this for things you want on the memory reserved for the core1 stack, not in main memory
+            // don't use this area for shared peripherals, they should be set up outside this function
 
+            // core1 loop state variables:
             let mut last_core1_heartbeat_tick = 0_u64; // last time core 1 toggled its LED
             let core1_heartbeat_rate = 1_000_000_u64 / 3; // 3Hz in timer ticks
+            let mut last_screen_update_ticks = 0_u64;
+            let mut frames_rendered = 0_u64; // variable for counting number of screen refreshes since reboot
 
-            // Second core loop:
+            // core1 loop:
             loop {
                 // core1 heartbeat blink:
                 if timer.get_counter().ticks() > (last_core1_heartbeat_tick + core1_heartbeat_rate)
@@ -409,17 +357,51 @@ fn main() -> ! {
                     heartbeat_led_pin_core1.toggle().unwrap();
                     last_core1_heartbeat_tick = timer.get_counter().ticks();
                 }
+
+                // core1 LCD screen updates:
+                if timer.get_counter().ticks() > (last_screen_update_ticks + SCREEN_REFRESH_TICKS) {
+                    last_screen_update_ticks = timer.get_counter().ticks();
+
+                    frames_rendered += 1;
+
+                    // Update the lines to be written:
+                    for line in &mut line_bufs {
+                        line.reset();
+                    }
+                    write!(&mut line_bufs[0], "fc: {}", frames_rendered).unwrap();
+                    write!(&mut line_bufs[1], "Line 2 is fixed.").unwrap();
+                    write!(&mut line_bufs[2], "fc: {}", frames_rendered).unwrap();
+                    write!(&mut line_bufs[3], "-=_+.,/\\[]|~`").unwrap();
+
+                    // Empty the display:
+                    let color = embedded_graphics::pixelcolor::BinaryColor::Off;
+                    display.clear(color).unwrap();
+
+                    // Write the buffers to the display buffer and update the screen:
+                    for (i, line) in line_bufs.iter().enumerate() {
+                        let line_top_pixel = 16 * i as i32;
+                        Text::with_baseline(
+                            line.as_str(),
+                            Point::new(0, line_top_pixel),
+                            text_style,
+                            Baseline::Top,
+                        )
+                        .draw(&mut display)
+                        .unwrap();
+                    }
+                    display.flush().unwrap();
+                }
             }
         })
         .unwrap();
 
-    // core0 loop state variables:
+    // core0 loop state variables
     let core0_heartbeat_rate = 1_000_000_u64 / 4; // 4Hz in timer ticks
     let mut last_core0_heartbeat_tick = 0_u64; // last time core 0 toggled its LED
     let mut last_usb_tick_ticks = 0_u64;
     let mut last_usb_key_state_send_ticks = 0_u64;
 
-    // Main core loop:
+    // core0 loop:
     loop {
         // core0 heartbeat blink:
         if timer.get_counter().ticks() > (last_core0_heartbeat_tick + core0_heartbeat_rate) {
@@ -427,8 +409,20 @@ fn main() -> ! {
             last_core0_heartbeat_tick = timer.get_counter().ticks();
         }
 
-        // put the current state of all the duttons (debounced) into the button array:
+        // put the current state of all the buttons (debounced) into the button array:
         update_buttons(&mut buttons, &timer);
+
+        // Sends a USB tick at the 1ms interval specified by USB spec
+        if timer.get_counter().ticks() > (last_usb_tick_ticks + USB_TICK_INTERVAL_TICKS) {
+            last_usb_tick_ticks = timer.get_counter().ticks();
+            match keyboard.tick() {
+                Err(UsbHidError::WouldBlock) => {}
+                Ok(_) => {}
+                Err(e) => {
+                    core::panic!("Failed to process keyboard tick: {:?}", e)
+                }
+            };
+        }
 
         // Sends a keyboard update at the specified interval
         if timer.get_counter().ticks() > (last_usb_key_state_send_ticks + USB_SEND_INTERVAL_TICKS) {
@@ -445,18 +439,6 @@ fn main() -> ! {
             }
         }
 
-        // Senda a USB tick at the 1ms interval specified by USB spec
-        if timer.get_counter().ticks() > (last_usb_tick_ticks + USB_TICK_INTERVAL_TICKS) {
-            last_usb_tick_ticks = timer.get_counter().ticks();
-            match keyboard.tick() {
-                Err(UsbHidError::WouldBlock) => {}
-                Ok(_) => {}
-                Err(e) => {
-                    core::panic!("Failed to process keyboard tick: {:?}", e)
-                }
-            };
-        }
-
         // We need to read from the keyboard if it sends things or USB doesn't work:
         if usb_dev.poll(&mut [&mut keyboard]) {
             match keyboard.device().read_report() {
@@ -470,12 +452,19 @@ fn main() -> ! {
     }
 }
 
+/// This will iterate over all the buttons in the button array, and will update their state when it differs from the previous value.
+/// States can only change if they occur more than debounce_ticks after the last state change. This will update the state of
+/// both the keyboard buttons as well as the control center buttons.
 fn update_buttons(buttons: &mut [ButtonState], timer: &Timer<CopyableTimer0>) {
     //we want to update the buttons per their individual debounce timings, and store the current value in the struct itself.
     for button in buttons {
         if timer.get_counter().ticks() > (button.last_update_ticks + button.debounce_ticks) {
-            button.last_update_ticks = timer.get_counter().ticks();
-            button.is_pressed = button.pin.is_low().unwrap();
+            let current_button_state = button.pin.is_low().unwrap();
+            if current_button_state != button.was_pressed {
+                button.last_update_ticks = timer.get_counter().ticks();
+                button.was_pressed = button.is_pressed;
+                button.is_pressed = button.pin.is_low().unwrap();
+            }
         }
     }
 }
@@ -484,7 +473,7 @@ fn update_buttons(buttons: &mut [ButtonState], timer: &Timer<CopyableTimer0>) {
 /// key mapped via the NKRO USB peripheral
 fn get_keys(buttons: &[ButtonState]) -> [Keyboard; NUM_BUTTONS] {
     // default to taking no action, and only update keys being pressed:
-    let mut keyboard: [Keyboard; NUM_BUTTONS] = [Keyboard::NoEventIndicated; 24];
+    let mut keyboard: [Keyboard; NUM_BUTTONS] = [Keyboard::NoEventIndicated; NUM_BUTTONS];
     for (i, button) in buttons.iter().enumerate() {
         if let Some(key) = button.key {
             if button.is_pressed {
@@ -493,6 +482,86 @@ fn get_keys(buttons: &[ButtonState]) -> [Keyboard; NUM_BUTTONS] {
         }
     }
     keyboard
+}
+
+// struct for storing all the button info to make iterative upating and configuring easier:
+pub struct ButtonState {
+    pub name: &'static str,
+    pub pin: Pin<DynPinId, FunctionSioInput, PullUp>,
+    pub last_update_ticks: u64,
+    pub debounce_ticks: u64,
+    pub key: Option<Keyboard>,
+    pub is_pressed: bool,
+    pub was_pressed: bool,
+}
+
+impl ButtonState {
+    /// Creates a new ButtonState struct using the default values where appropriate.
+    fn new(
+        name: &'static str,
+        pin: Pin<DynPinId, FunctionSioInput, PullUp>,
+        key: Option<Keyboard>,
+    ) -> Self {
+        Self {
+            name,
+            pin,
+            key,
+            last_update_ticks: 0,
+            debounce_ticks: DEFAULT_DEBOUNCE_TICKS,
+            is_pressed: false,
+            was_pressed: false,
+        }
+    }
+
+    /// Will return true if the button state changed from unpressed to pressed on the most recent update.
+    /// Will return false if the button state is the same as its previous state or if the button was released
+    fn press_occurred_this_update(&self) -> bool {
+        self.is_pressed && !self.was_pressed
+    }
+
+    /// Will return true if the button state changed from pressed to unpressed on the most recent update.
+    /// Will return false if the button state is the same as its previous state or if the button was pressed
+    fn release_occurred_this_update(&self) -> bool {
+        !self.is_pressed && self.was_pressed
+    }
+}
+
+/// This is a very simple buffer to pre format a short line of text
+/// limited arbitrarily to BUF_SIZE bytes.
+struct FmtBuf {
+    buf: [u8; BUF_SIZE],
+    ptr: usize,
+}
+
+impl FmtBuf {
+    fn new() -> Self {
+        Self {
+            buf: [0; BUF_SIZE],
+            ptr: 0,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.ptr = 0;
+    }
+
+    fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.buf[0..self.ptr]).unwrap()
+    }
+}
+
+impl core::fmt::Write for FmtBuf {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let rest_len = self.buf.len() - self.ptr;
+        let len = if rest_len < s.len() {
+            rest_len
+        } else {
+            s.len()
+        };
+        self.buf[self.ptr..(self.ptr + len)].copy_from_slice(&s.as_bytes()[0..len]);
+        self.ptr += len;
+        Ok(())
+    }
 }
 
 /// Program metadata for `picotool info`
