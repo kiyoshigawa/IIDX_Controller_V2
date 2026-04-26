@@ -5,23 +5,42 @@ version = "0.1.0"
 license = "GPL-3.0-or-later for new work AND (MIT OR Apache-2.0) for original template"
 
 [dependencies]
-cortex-m = "0.7"
-cortex-m-rt = "0.7"
-embedded-hal = { version = "1.0.0" }
+cortex-m = "0.7.0"
+cortex-m-rt = "0.7.0"
+critical-section = "1.2.0"
+defmt = "1.0.0"
+defmt-rtt = "1.0.0"
+embedded-graphics = "0.8.2"
+embedded-hal = "1.0.0"
+fugit = "0.3.6"
+heapless = "0.8.0"
+pio = "0.3.0"
+ssd1306 = "0.10.0"
+usb-device = "0.3.2"
+usbd-serial = "0.2.2"
 
-defmt = "1"
-defmt-rtt = "1"
-panic-probe = { version = "1", features = ["print-defmt"] }
+# Dependencies with features or package renames:
 
-# We're using a Pico 2 by default on this template
-#rp-pico2 = "0.9" # TODO: Do we have that crate already ?
+# [dependencies.embedded_hal_0_2]
+# package = "embedded-hal"
+# version = "0.2.7"
+# features = ["unproven"]
 
-# If you're not going to use a Board Support Package you'll need these:
-rp235x-hal = { version = "0.3", features = [
+[dependencies.panic-probe]
+version = "1"
+features = ["print-defmt"]
+
+[dependencies.rp235x-hal]
+version = "0.4"
+features = [
     "rt",
     "critical-section-impl",
     "binary-info",
-] }
+]
+
+[dependencies.usbd-human-interface-device]
+version = "0.6.0"
+features = ["defmt"]
 
 # cargo build/run
 [profile.dev]

@@ -43,15 +43,16 @@ This is a rust program designed for the [Waveshare Core 2350B](https://www.waves
 	- I/O Requirements:
   	- 18 I/O Pins for buttons
   		- 14 key buttons + start/select buttons for each player
-  	- 4 pins for encoders for wiki wikis, 2 pins each needed for quadrature encoding
-  	- 1 I/O Pin for WS2812B LED Strip Control
   	- 5 Pins for system control buttons
   		- Up, Down, Left, Right, and Select for menu navigation.
+  	- 1 I/O Pin for WS2812B LED Strip Control
+  	- 4 pins for encoders for wiki wikis, 2 pins each needed for quadrature encoding
   	- 6 I/O Pins Optional LED Screen Data Pins
   		- Screen uses 2 pins for I2C
       - I will leave a bank of SPI pins available for future peripherals
   	- 2 Analog Pins for Stereo Audio Input for DSP
-  	- 6 currently unused Pins to be available for additional features
+  	- 9 currently unused Pins to be available for additional features
+    - Pin 47 is used by the PSRAM chip on the board, so it is unavailable.
 - [x] Dual-Cores Can be used to Prioritize Input over Cosmetic Features
 	- Main Core (High Priority, Low Latency Tasks):
 		- NKRO Keyboard and USB Bus
