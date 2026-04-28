@@ -31,6 +31,7 @@ use embedded_graphics::{
 use embedded_hal::digital::*;
 use fugit::RateExtU32;
 use panic_probe as _;
+use rp235x_hal::pac::accessctrl::rsm::RSM_SPEC;
 use rp235x_hal::timer::{CopyableTimer0, Timer};
 use rp235x_hal::{
     self as hal, Clock, I2C,
@@ -262,21 +263,21 @@ fn main() -> ! {
     // LED strip control pin
     let _led_strip_data_pin = pins.gpio27.into_push_pull_output();
 
-    //SPI bus pins using SPI1 device: (reserved for future peripherals, not currently in use)
-    let _spi_rx_pin = pins.gpio28.into_pull_down_disabled();
-    let _spi_cs_pin = pins.gpio29.into_pull_down_disabled();
-    let _spi_sck_pin = pins.gpio30.into_pull_down_disabled();
-    let _spi_tx_pin = pins.gpio31.into_pull_down_disabled();
+    // encoder pins:
+    let p1_encoder_pin_a = pins.gpio28.into_pull_up_input();
+    let p1_encoder_pin_b = pins.gpio29.into_pull_up_input();
+    let p2_encoder_pin_a = pins.gpio30.into_pull_up_input();
+    let p2_encoder_pin_b = pins.gpio31.into_pull_up_input();
 
     //i2c bus pins usinf i2c0 device:
     let i2c_sda_pin = pins.gpio32.reconfigure();
     let i2c_scl_pin = pins.gpio33.reconfigure();
 
-    // encoder pins:
-    let _p1_encoder_pin_a = pins.gpio34.into_pull_up_input();
-    let _p1_encoder_pin_b = pins.gpio35.into_pull_up_input();
-    let _p2_encoder_pin_a = pins.gpio36.into_pull_up_input();
-    let _p2_encoder_pin_b = pins.gpio37.into_pull_up_input();
+    //SPI bus pins using SPI0 device: (reserved for future peripherals, not currently in use)
+    let _spi_cs_pin = pins.gpio34.into_pull_down_disabled();
+    let _spi_sck_pin = pins.gpio35.into_pull_down_disabled();
+    let _spi_tx_pin = pins.gpio36.into_pull_down_disabled();
+    let _spi_rx_pin = pins.gpio37.into_pull_down_disabled();
 
     // heartbeat LEDs
     let mut heartbeat_led_pin_core1 = pins.gpio38.into_push_pull_output();
@@ -321,6 +322,93 @@ fn main() -> ! {
         .unwrap()
         .build();
 
+    // PIO Encoder test Setup - Original ASM from adamgreen:
+    // Copyright 2021 Adam Green (https://github.com/adamgreen/QuadratureDecoder)
+    // Licensed under the Apache License, Version 2.0
+    // See: http://www.apache.org/licenses/LICENSE-2.0
+
+    // Use the RP2040's PIO state machines to count quadrature encoder ticks.
+    let program = pio::pio_asm!(
+        ".origin 0",
+        // 16 element jump table based on 4-bit encoder last state and current state.
+        "    jmp delta0", // 00-00
+        "    jmp minus1", // 00-01
+        "    jmp plus1",  // 00-10
+        "    jmp delta0", // 00-11
+        "    jmp plus1",  // 01-00
+        "    jmp delta0", // 01-01
+        "    jmp delta0", // 01-10
+        "    jmp minus1", // 01-11
+        "    jmp minus1", // 10-00
+        "    jmp delta0", // 10-01
+        "    jmp delta0", // 10-10
+        "    jmp plus1",  // 10-11
+        "    jmp delta0", // 11-00
+        "    jmp plus1",  // 11-01
+        "    jmp minus1", // 11-10
+        "    jmp delta0", // 11-11
+        ".wrap_target",
+        "delta0:",
+        "    mov isr, null", // Make sure that the input shift register is cleared when table jumps to delta0.
+        "    in y, 2", // Upper 2-bits of address are formed from previous encoder pin readings
+        "    mov y, pins", // Lower 2-bits of address are formed from current encoder pin readings. Save in Y as well.
+        "    in y, 2",
+        "    mov pc, isr", // Jump into jump table which will then jump to delta0, minus1, or plus1 labels.
+        "minus1:",
+        "    jmp x-- output", // Decrement x
+        "    jmp output",
+        "plus1:",
+        "    mov x, ~x", // Increment x by calculating x=~(~x - 1)
+        "    jmp x-- next2",
+        "next2:",
+        "    mov x, ~x",
+        "output:",
+        "    mov isr, x", // Push out updated counter.
+        "    push noblock",
+        ".wrap"
+    );
+
+    let _program = pio::pio_asm!(
+        "    mov isr, null", // Make sure that the input shift register is cleared when table jumps to delta0.
+        "    in y, 2", // Upper 2-bits of address are formed from previous encoder pin readings
+        "    mov y, pins", // Lower 2-bits of address are formed from current encoder pin readings. Save in Y as well.
+        "    in y, 2",
+        "    push noblock",
+    );
+
+    let (mut pio, sm0, sm1, _, _) = pac.PIO0.split(&mut pac.RESETS);
+    let program = pio.install(&program.program).unwrap();
+    let program2 = unsafe { program.share() };
+
+    let p1_encoder_pin_a_pin = p1_encoder_pin_a.id().num;
+    let p1_encoder_pin_b_pin = p1_encoder_pin_b.id().num;
+    let p2_encoder_pin_a_pin = p2_encoder_pin_a.id().num;
+    let p2_encoder_pin_b_pin = p2_encoder_pin_b.id().num;
+
+    let (mut sm_p1, mut rx_p1, _) = hal::pio::PIOBuilder::from_installed_program(program)
+        .in_pin_base(p1_encoder_pin_a_pin)
+        .in_count(2)
+        .in_shift_direction(rp235x_hal::pio::ShiftDirection::Left)
+        .buffers(Buffers::OnlyRx)
+        .build(sm0);
+    sm_p1.set_pindirs([
+        (p1_encoder_pin_a_pin, hal::pio::PinDir::Input),
+        (p1_encoder_pin_b_pin, hal::pio::PinDir::Input),
+    ]);
+    sm_p1.start();
+
+    let (mut sm_p2, mut rx_p2, _) = hal::pio::PIOBuilder::from_installed_program(program2)
+        .in_pin_base(p2_encoder_pin_a_pin)
+        .in_count(2)
+        .in_shift_direction(rp235x_hal::pio::ShiftDirection::Left)
+        .buffers(Buffers::OnlyRx)
+        .build(sm1);
+    sm_p2.set_pindirs([
+        (p2_encoder_pin_a_pin, hal::pio::PinDir::Input),
+        (p2_encoder_pin_b_pin, hal::pio::PinDir::Input),
+    ]);
+    sm_p2.start();
+
     // i2c SD1306 oled setup:
     // I also make 4 text buffers to use to writ the 4 viible lines of text on the screen
     let interface = ssd1306::I2CDisplayInterface::new(i2c);
@@ -333,6 +421,8 @@ fn main() -> ! {
         .build();
     // Array of four 64 byte text buffers. Each buffer will be a line of text on the oled
     let mut line_bufs: [FmtBuf; 4] = [FmtBuf::new(), FmtBuf::new(), FmtBuf::new(), FmtBuf::new()];
+
+    let mut demonstration = 1;
 
     //Start second core (core1) and begin its program loop:
     core1
@@ -348,6 +438,7 @@ fn main() -> ! {
             let core1_heartbeat_rate = 1_000_000_u64 / 3; // 3Hz in timer ticks
             let mut last_screen_update_ticks = 0_u64;
             let mut frames_rendered = 0_u64; // variable for counting number of screen refreshes since reboot
+            let mut encoder_p1_count: i32 = 0;
 
             // core1 loop:
             loop {
@@ -356,6 +447,13 @@ fn main() -> ! {
                 {
                     heartbeat_led_pin_core1.toggle().unwrap();
                     last_core1_heartbeat_tick = timer.get_counter().ticks();
+                }
+
+                while !rx_p1.is_empty() {
+                    if let Some(value) = rx_p1.read() {
+                        info!("Encoder P1 Position: {}", value as i32);
+                        encoder_p1_count = value as i32;
+                    }
                 }
 
                 // core1 LCD screen updates:
@@ -370,7 +468,7 @@ fn main() -> ! {
                     }
                     write!(&mut line_bufs[0], "fc: {}", frames_rendered).unwrap();
                     write!(&mut line_bufs[1], "Line 2 is fixed.").unwrap();
-                    write!(&mut line_bufs[2], "fc: {}", frames_rendered).unwrap();
+                    write!(&mut line_bufs[2], "enc1: {}", encoder_p1_count).unwrap();
                     write!(&mut line_bufs[3], "-=_+.,/\\[]|~`").unwrap();
 
                     // Empty the display:
@@ -403,6 +501,8 @@ fn main() -> ! {
 
     // core0 loop:
     loop {
+        demonstration = 2;
+
         // core0 heartbeat blink:
         if timer.get_counter().ticks() > (last_core0_heartbeat_tick + core0_heartbeat_rate) {
             heartbeat_led_pin_core0.toggle().unwrap();
