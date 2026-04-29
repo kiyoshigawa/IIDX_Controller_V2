@@ -72,7 +72,7 @@ This is a rust program designed for the [Waveshare Core 2350B](https://www.waves
 - [ ] Encoder processing
 	- [x] I used the asm from the [adamgreen github](https://github.com/adamgreen/QuadratureDecoder/blob/master/QuadratureDecoder.pio) example for PIO encoders
   	- [x] Need to verify the code is actually working and get the encoder counts out of the fifo buffer.
-    - [ ] implement encoder debounce
+    - [x] implement encoder debounce - const for now, adjust later
 	- [ ] Revisit encoder position to input press logic from old controller to ensure it is working as intended
 	- [ ] Need to figure out how to send keyboard signals based on encoder position changes using the NKRO USB HID library
 - [ ] Lighting Controller [Github repo](https://github.com/kiyoshigawa/lighting_controller)

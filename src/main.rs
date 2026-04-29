@@ -45,8 +45,11 @@ use usbd_human_interface_device::{page::Keyboard, prelude::*};
 /// The number of GPIO pins being used as buttons, both for the keyboard peripheral and for the control panel.
 const NUM_BUTTONS: usize = 27;
 
-/// Default debounce time in ticks (1,000,000 ticks per second)
-const DEFAULT_DEBOUNCE_TICKS: u64 = 10_000;
+/// Default button debounce time in ticks (1,000,000 ticks per second)
+const DEFAULT_BUTTON_DEBOUNCE_TICKS: u64 = 10_000;
+
+/// Default encoder debounce time in ticks (1,000,000 ticks per second)
+const DEFAULT_ENCODER_DEBOUNCE_TICKS: u64 = 1_000;
 
 /// Default usb device tick send time in ticks (1,000,000 ticks per second)
 /// This should be 1ms per USB spec or device will lose connection
@@ -493,8 +496,10 @@ fn main() -> ! {
     let mut last_core0_heartbeat_tick = 0_u64; // last time core 0 toggled its LED
     let mut last_usb_tick_ticks = 0_u64;
     let mut last_usb_key_state_send_ticks = 0_u64;
-    let mut encoder_p1_count: i32 = 0;
-    let mut encoder_p2_count: i32 = 0;
+    let mut encoder_p1_count = 0_i32;
+    let mut encoder_p2_count = 0_i32;
+    let mut encoder_p1_last_update_ticks = 0_u64;
+    let mut encoder_p2_last_update_ticks = 0_u64;
 
     // core0 loop:
     loop {
@@ -513,14 +518,24 @@ fn main() -> ! {
         // read encoder positions from FIFO buffers for use here AND on core1:
         while !rx_p1.is_empty() {
             if let Some(value) = rx_p1.read() {
-                info!("Encoder P1 Position: {}", value as i32);
-                encoder_p1_count = value as i32;
+                if timer.get_counter().ticks()
+                    > (encoder_p1_last_update_ticks + DEFAULT_ENCODER_DEBOUNCE_TICKS)
+                {
+                    encoder_p1_last_update_ticks = timer.get_counter().ticks();
+                    info!("Encoder P1 Position: {}", value as i32);
+                    encoder_p1_count = value as i32;
+                }
             }
         }
         while !rx_p2.is_empty() {
             if let Some(value) = rx_p2.read() {
-                info!("Encoder P1 Position: {}", value as i32);
-                encoder_p2_count = value as i32;
+                if timer.get_counter().ticks()
+                    > (encoder_p2_last_update_ticks + DEFAULT_ENCODER_DEBOUNCE_TICKS)
+                {
+                    encoder_p2_last_update_ticks = timer.get_counter().ticks();
+                    info!("Encoder P1 Position: {}", value as i32);
+                    encoder_p2_count = value as i32;
+                }
             }
         }
 
@@ -650,7 +665,7 @@ impl ButtonState {
             pin,
             key,
             last_update_ticks: 0,
-            debounce_ticks: DEFAULT_DEBOUNCE_TICKS,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
             is_pressed: false,
             was_pressed: false,
         }
