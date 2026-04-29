@@ -63,16 +63,16 @@ This is a rust program designed for the [Waveshare Core 2350B](https://www.waves
 		- Audio DSP and FFT analysis
 - [ ] Button Processing
 	- [x] https://github.com/dlkj/usbd-human-interface-device <- Tested and working
-	- [ ] Send each button press via USB NKRO library at sample rate.
-		- [ ] 500Hz sample rate min, see if 1000Hz works
-	- [ ] Planning to do button via polling, not interrupts.
-	- [ ] Individual debounce timers for each button
-	- [ ] USB updates sent to match the sample rate
-	- [ ] Separate button polling loop for core 1 menu buttons. Core 0 only gets gameplay buttons.
+	- [x] Send each button press via USB NKRO library at sample rate.
+		- [x] 1000Hz works
+	- [x] Planning to do button via polling, not interrupts.
+	- [x] Individual debounce timers for each button
+	- [x] USB updates sent to match the sample rate
+	- [ ] handle control center buttons with menu system
 - [ ] Encoder processing
 	- [x] I used the asm from the [adamgreen github](https://github.com/adamgreen/QuadratureDecoder/blob/master/QuadratureDecoder.pio) example for PIO encoders
-  	- [ ] Need to verify the code is actually working and get the encoder counts out of the fifo buffer.
-		- [ ] might switch from an interrupt or polling the PIO FIFO buffer to dual DMA peripherals (if they're not getting used by something else)
+  	- [x] Need to verify the code is actually working and get the encoder counts out of the fifo buffer.
+    - [ ] implement encoder debounce
 	- [ ] Revisit encoder position to input press logic from old controller to ensure it is working as intended
 	- [ ] Need to figure out how to send keyboard signals based on encoder position changes using the NKRO USB HID library
 - [ ] Lighting Controller [Github repo](https://github.com/kiyoshigawa/lighting_controller)

@@ -16,10 +16,7 @@
 #![no_std]
 #![no_main]
 
-use core::cell::RefCell;
 use core::fmt::Write;
-use core::sync::atomic::{AtomicI32, Ordering};
-use critical_section::Mutex;
 use defmt::info;
 use defmt_rtt as _;
 use embedded_graphics::{
@@ -31,7 +28,6 @@ use embedded_graphics::{
 use embedded_hal::digital::*;
 use fugit::RateExtU32;
 use panic_probe as _;
-use rp235x_hal::pac::accessctrl::rsm::RSM_SPEC;
 use rp235x_hal::timer::{CopyableTimer0, Timer};
 use rp235x_hal::{
     self as hal, Clock, I2C,
@@ -244,12 +240,12 @@ fn main() -> ! {
             None,
         ),
         ButtonState::new(
-            "Volume Up",
+            "Volume_Up",
             pins.gpio24.into_pull_up_input().into_dyn_pin(),
             Some(Keyboard::VolumeUp),
         ),
         ButtonState::new(
-            "Volume Down",
+            "Volume_Down",
             pins.gpio25.into_pull_up_input().into_dyn_pin(),
             Some(Keyboard::VolumeDown),
         ),
@@ -368,14 +364,6 @@ fn main() -> ! {
         ".wrap"
     );
 
-    let _program = pio::pio_asm!(
-        "    mov isr, null", // Make sure that the input shift register is cleared when table jumps to delta0.
-        "    in y, 2", // Upper 2-bits of address are formed from previous encoder pin readings
-        "    mov y, pins", // Lower 2-bits of address are formed from current encoder pin readings. Save in Y as well.
-        "    in y, 2",
-        "    push noblock",
-    );
-
     let (mut pio, sm0, sm1, _, _) = pac.PIO0.split(&mut pac.RESETS);
     let program = pio.install(&program.program).unwrap();
     let program2 = unsafe { program.share() };
@@ -422,13 +410,15 @@ fn main() -> ! {
     // Array of four 64 byte text buffers. Each buffer will be a line of text on the oled
     let mut line_bufs: [FmtBuf; 4] = [FmtBuf::new(), FmtBuf::new(), FmtBuf::new(), FmtBuf::new()];
 
-    let mut demonstration = 1;
-
     //Start second core (core1) and begin its program loop:
     core1
         .spawn(CORE_STACK_1.take().unwrap(), move || {
-            let _core = unsafe { cortex_m::Peripherals::steal() };
             info!("Core1 Program Start!");
+
+            let _core = unsafe { cortex_m::Peripherals::steal() };
+            let pac = unsafe { hal::pac::Peripherals::steal() };
+            let mut sio = hal::Sio::new(pac.SIO);
+
             // core1 exclusive setup goes here:
             // Use this for things you want on the memory reserved for the core1 stack, not in main memory
             // don't use this area for shared peripherals, they should be set up outside this function
@@ -438,22 +428,27 @@ fn main() -> ! {
             let core1_heartbeat_rate = 1_000_000_u64 / 3; // 3Hz in timer ticks
             let mut last_screen_update_ticks = 0_u64;
             let mut frames_rendered = 0_u64; // variable for counting number of screen refreshes since reboot
+            let mut _current_button_state = 0_u32;
+            let mut _previous_button_state = 0_u32;
             let mut encoder_p1_count: i32 = 0;
+            let mut encoder_p2_count: i32 = 0;
 
             // core1 loop:
             loop {
+                //get core0 variable info:
+                let fifo_is_empty = (sio.fifo.status() & 0b1) == 0; // Bit 0 VLD: Value is 1 if this core’s RX FIFO is not empty (i.e. if FIFO_RD is valid) - RP235x datasheet pg. 67
+                if !fifo_is_empty {
+                    _current_button_state = sio.fifo.read_blocking();
+                    _previous_button_state = sio.fifo.read_blocking();
+                    encoder_p1_count = sio.fifo.read_blocking() as i32;
+                    encoder_p2_count = sio.fifo.read_blocking() as i32;
+                }
+
                 // core1 heartbeat blink:
                 if timer.get_counter().ticks() > (last_core1_heartbeat_tick + core1_heartbeat_rate)
                 {
                     heartbeat_led_pin_core1.toggle().unwrap();
                     last_core1_heartbeat_tick = timer.get_counter().ticks();
-                }
-
-                while !rx_p1.is_empty() {
-                    if let Some(value) = rx_p1.read() {
-                        info!("Encoder P1 Position: {}", value as i32);
-                        encoder_p1_count = value as i32;
-                    }
                 }
 
                 // core1 LCD screen updates:
@@ -469,7 +464,7 @@ fn main() -> ! {
                     write!(&mut line_bufs[0], "fc: {}", frames_rendered).unwrap();
                     write!(&mut line_bufs[1], "Line 2 is fixed.").unwrap();
                     write!(&mut line_bufs[2], "enc1: {}", encoder_p1_count).unwrap();
-                    write!(&mut line_bufs[3], "-=_+.,/\\[]|~`").unwrap();
+                    write!(&mut line_bufs[3], "enc2: {}", encoder_p2_count).unwrap();
 
                     // Empty the display:
                     let color = embedded_graphics::pixelcolor::BinaryColor::Off;
@@ -498,11 +493,11 @@ fn main() -> ! {
     let mut last_core0_heartbeat_tick = 0_u64; // last time core 0 toggled its LED
     let mut last_usb_tick_ticks = 0_u64;
     let mut last_usb_key_state_send_ticks = 0_u64;
+    let mut encoder_p1_count: i32 = 0;
+    let mut encoder_p2_count: i32 = 0;
 
     // core0 loop:
     loop {
-        demonstration = 2;
-
         // core0 heartbeat blink:
         if timer.get_counter().ticks() > (last_core0_heartbeat_tick + core0_heartbeat_rate) {
             heartbeat_led_pin_core0.toggle().unwrap();
@@ -511,6 +506,32 @@ fn main() -> ! {
 
         // put the current state of all the buttons (debounced) into the button array:
         update_buttons(&mut buttons, &timer);
+
+        // prep button states for use on core1:
+        let (current_button_state, previous_button_state) = encode_button_state(&buttons);
+
+        // read encoder positions from FIFO buffers for use here AND on core1:
+        while !rx_p1.is_empty() {
+            if let Some(value) = rx_p1.read() {
+                info!("Encoder P1 Position: {}", value as i32);
+                encoder_p1_count = value as i32;
+            }
+        }
+        while !rx_p2.is_empty() {
+            if let Some(value) = rx_p2.read() {
+                info!("Encoder P1 Position: {}", value as i32);
+                encoder_p2_count = value as i32;
+            }
+        }
+
+        // send core1 data to core1 if it has room:
+        let fifo_is_empty = (sio.fifo.status() & 0b1) == 0; // Bit 0 VLD: Value is 1 if this core’s RX FIFO is not empty (i.e. if FIFO_RD is valid) - RP235x datasheet pg. 67
+        if fifo_is_empty {
+            sio.fifo.write(current_button_state as u32);
+            sio.fifo.write(previous_button_state as u32);
+            sio.fifo.write(encoder_p1_count as u32);
+            sio.fifo.write(encoder_p2_count as u32);
+        }
 
         // Sends a USB tick at the 1ms interval specified by USB spec
         if timer.get_counter().ticks() > (last_usb_tick_ticks + USB_TICK_INTERVAL_TICKS) {
@@ -563,10 +584,32 @@ fn update_buttons(buttons: &mut [ButtonState], timer: &Timer<CopyableTimer0>) {
             if current_button_state != button.was_pressed {
                 button.last_update_ticks = timer.get_counter().ticks();
                 button.was_pressed = button.is_pressed;
-                button.is_pressed = button.pin.is_low().unwrap();
+                button.is_pressed = current_button_state;
             }
+        } else {
+            // too soon for post-debounce complete update, so we don't need to check the pin value, but still need to get the previous
+            // state updated so changes only fire once
+            button.was_pressed = button.is_pressed;
         }
     }
+}
+
+/// this function returns an two u32 values representing binary button states for all the NUM_BUTTONS buttons in the buttons array, in order.
+/// (current_state, previous_state)
+fn encode_button_state(buttons: &[ButtonState]) -> (u32, u32) {
+    let mut current_state = 0_u32;
+    let mut previous_state = 0_u32;
+
+    for (position, button) in buttons.iter().enumerate() {
+        let mut is_pressed = button.is_pressed as u32;
+        is_pressed = is_pressed << position; // move the state of the button to the right position
+        current_state |= is_pressed;
+        let mut was_pressed = button.was_pressed as u32;
+        was_pressed = was_pressed << position; // move the state of the button to the right position
+        previous_state |= was_pressed;
+    }
+
+    (current_state, previous_state)
 }
 
 /// This function will send the current button state of all buttons in the button array what have a
@@ -615,13 +658,13 @@ impl ButtonState {
 
     /// Will return true if the button state changed from unpressed to pressed on the most recent update.
     /// Will return false if the button state is the same as its previous state or if the button was released
-    fn press_occurred_this_update(&self) -> bool {
+    fn _press_occurred_this_update(&self) -> bool {
         self.is_pressed && !self.was_pressed
     }
 
     /// Will return true if the button state changed from pressed to unpressed on the most recent update.
     /// Will return false if the button state is the same as its previous state or if the button was pressed
-    fn release_occurred_this_update(&self) -> bool {
+    fn _release_occurred_this_update(&self) -> bool {
         !self.is_pressed && self.was_pressed
     }
 }
