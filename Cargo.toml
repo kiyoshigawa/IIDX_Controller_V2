@@ -15,9 +15,17 @@ embedded-hal = "1.0.0"
 fugit = "0.3.6"
 heapless = "0.8.0"
 pio = "0.3.0"
+smart-leds = "0.4.0"
 ssd1306 = "0.10.0"
 usb-device = "0.3.2"
 usbd-serial = "0.2.2"
+
+# Use PR #40 commit with rp235x-hal support
+[dependencies.ws2812-pio]
+git = "https://github.com/melastmohican/ws2812-pio-rs"
+rev = "3546fdd28cdae8f8a4364fa92e921f975006c9c7"
+default-features = false
+features = ["rp235x"]
 
 # Dependencies with features or package renames:
 

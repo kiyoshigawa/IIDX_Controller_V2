@@ -33,14 +33,17 @@ use rp235x_hal::{
     self as hal, Clock, I2C,
     clocks::init_clocks_and_plls,
     entry,
-    gpio::{DynPinId, FunctionSioInput, Pin, PullUp},
+    gpio::{DynPinId, FunctionSioInput, Pin, PullDown},
     multicore::{Multicore, Stack},
     pac,
     pio::{Buffers, PIOExt},
 };
 use ssd1306::{Ssd1306, prelude::*};
-use usb_device::{class_prelude::*, prelude::*};
+use usb_device::{bus::*, class_prelude::*, prelude::*};
 use usbd_human_interface_device::{page::Keyboard, prelude::*};
+
+/// The frequency of the external clock crystal on the board:
+const EXTERNAL_XTAL_FREQ: u32 = 12_000_000u32;
 
 /// The number of GPIO pins being used as buttons, both for the keyboard peripheral and for the control panel.
 const NUM_BUTTONS: usize = 27;
@@ -67,6 +70,30 @@ static CORE_STACK_1: Stack<32768> = Stack::new();
 /// size for the FmtBuf buffer in bytes. Screen can only hold ~14 chars per line, so it can be small for us
 const BUF_SIZE: usize = 16;
 
+/// Time in ticks between LED strip refreshes:
+const LED_FRAME_TICKS: u64 = 6_944; //144Hz
+
+/// A binary header to take the highest 5 bits of the current button state
+/// being sent from core0 to core1
+const CURRENT_BUTTON_STATE_HEADER: u32 = 0b10100;
+
+/// A binary header to take the highest 5 bits of the previous button state
+/// being sent from core0 to core1
+const PREVIOUS_BUTTON_STATE_HEADER: u32 = 0b10101;
+
+/// A binary header to take the highest 5 bits of the encoder 1 count value
+/// being sent from core0 to core1
+const ENCODER_P1_COUNT_HEADER: u32 = 0b10110;
+
+/// A binary header to take the highest 5 bits of the encoder 2 count value
+/// being sent from core0 to core1
+const ENCODER_P2_COUNT_HEADER: u32 = 0b10111;
+
+/// This is the idle timeout for the encoders. If there has been no change in inputs
+/// (buttons or encoder) after this amount of time, the encoder counts will reset to 0.
+/// time is in ticks (1,000,000 ticks per second)
+const TICKS_SINCE_LAST_STATE_CHANGE: u64 = 10_000_000 * 900;
+
 /// Tell the Boot ROM about our application:
 #[unsafe(link_section = ".start_block")]
 #[used]
@@ -88,9 +115,8 @@ fn main() -> ! {
     let core1 = &mut cores[1];
 
     // Core clock setup. External crystal is 12MHz, CPU default clock is 125MHz
-    let external_xtal_freq_hz = 12_000_000u32;
     let clocks = init_clocks_and_plls(
-        external_xtal_freq_hz,
+        EXTERNAL_XTAL_FREQ,
         pac.XOSC,
         pac.CLOCKS,
         pac.PLL_SYS,
@@ -124,143 +150,143 @@ fn main() -> ! {
     let mut buttons: [ButtonState; NUM_BUTTONS] = [
         ButtonState::new(
             "P1_1",
-            pins.gpio0.into_pull_up_input().into_dyn_pin(),
+            pins.gpio0.into_pull_down_input().into_dyn_pin(),
             Some(Keyboard::Z),
         ),
         ButtonState::new(
             "P1_2",
-            pins.gpio1.into_pull_up_input().into_dyn_pin(),
+            pins.gpio1.into_pull_down_input().into_dyn_pin(),
             Some(Keyboard::S),
         ),
         ButtonState::new(
             "P1_3",
-            pins.gpio2.into_pull_up_input().into_dyn_pin(),
+            pins.gpio2.into_pull_down_input().into_dyn_pin(),
             Some(Keyboard::X),
         ),
         ButtonState::new(
             "P1_4",
-            pins.gpio3.into_pull_up_input().into_dyn_pin(),
+            pins.gpio3.into_pull_down_input().into_dyn_pin(),
             Some(Keyboard::D),
         ),
         ButtonState::new(
             "P1_5",
-            pins.gpio4.into_pull_up_input().into_dyn_pin(),
+            pins.gpio4.into_pull_down_input().into_dyn_pin(),
             Some(Keyboard::C),
         ),
         ButtonState::new(
             "P1_6",
-            pins.gpio5.into_pull_up_input().into_dyn_pin(),
+            pins.gpio5.into_pull_down_input().into_dyn_pin(),
             Some(Keyboard::F),
         ),
         ButtonState::new(
             "P1_7",
-            pins.gpio6.into_pull_up_input().into_dyn_pin(),
+            pins.gpio6.into_pull_down_input().into_dyn_pin(),
             Some(Keyboard::V),
         ),
         ButtonState::new(
             "P1_Start",
-            pins.gpio7.into_pull_up_input().into_dyn_pin(),
+            pins.gpio7.into_pull_down_input().into_dyn_pin(),
             Some(Keyboard::Grave),
         ),
         ButtonState::new(
             "P1_Select",
-            pins.gpio8.into_pull_up_input().into_dyn_pin(),
+            pins.gpio8.into_pull_down_input().into_dyn_pin(),
             Some(Keyboard::Keyboard1),
         ),
         ButtonState::new(
             "P2_1",
-            pins.gpio9.into_pull_up_input().into_dyn_pin(),
+            pins.gpio9.into_pull_down_input().into_dyn_pin(),
             Some(Keyboard::M),
         ),
         ButtonState::new(
             "P2_2",
-            pins.gpio10.into_pull_up_input().into_dyn_pin(),
+            pins.gpio10.into_pull_down_input().into_dyn_pin(),
             Some(Keyboard::K),
         ),
         ButtonState::new(
             "P2_3",
-            pins.gpio11.into_pull_up_input().into_dyn_pin(),
+            pins.gpio11.into_pull_down_input().into_dyn_pin(),
             Some(Keyboard::Comma),
         ),
         ButtonState::new(
             "P2_4",
-            pins.gpio12.into_pull_up_input().into_dyn_pin(),
+            pins.gpio12.into_pull_down_input().into_dyn_pin(),
             Some(Keyboard::L),
         ),
         ButtonState::new(
             "P2_5",
-            pins.gpio13.into_pull_up_input().into_dyn_pin(),
+            pins.gpio13.into_pull_down_input().into_dyn_pin(),
             Some(Keyboard::Dot),
         ),
         ButtonState::new(
             "P2_6",
-            pins.gpio14.into_pull_up_input().into_dyn_pin(),
+            pins.gpio14.into_pull_down_input().into_dyn_pin(),
             Some(Keyboard::Semicolon),
         ),
         ButtonState::new(
             "P2_7",
-            pins.gpio15.into_pull_up_input().into_dyn_pin(),
+            pins.gpio15.into_pull_down_input().into_dyn_pin(),
             Some(Keyboard::ForwardSlash),
         ),
         ButtonState::new(
             "P2_Start",
-            pins.gpio16.into_pull_up_input().into_dyn_pin(),
+            pins.gpio16.into_pull_down_input().into_dyn_pin(),
             Some(Keyboard::DeleteBackspace),
         ),
         ButtonState::new(
             "P2_Select",
-            pins.gpio17.into_pull_up_input().into_dyn_pin(),
+            pins.gpio17.into_pull_down_input().into_dyn_pin(),
             Some(Keyboard::Equal),
         ),
         ButtonState::new(
             "Escape",
-            pins.gpio18.into_pull_up_input().into_dyn_pin(),
+            pins.gpio18.into_pull_down_input().into_dyn_pin(),
             Some(Keyboard::Escape),
         ),
         ButtonState::new(
             "CC_Up",
-            pins.gpio19.into_pull_up_input().into_dyn_pin(),
+            pins.gpio19.into_pull_down_input().into_dyn_pin(),
             None,
         ),
         ButtonState::new(
             "CC_Down",
-            pins.gpio20.into_pull_up_input().into_dyn_pin(),
+            pins.gpio20.into_pull_down_input().into_dyn_pin(),
             None,
         ),
         ButtonState::new(
             "CC_Left",
-            pins.gpio21.into_pull_up_input().into_dyn_pin(),
+            pins.gpio21.into_pull_down_input().into_dyn_pin(),
             None,
         ),
         ButtonState::new(
             "CC_Right",
-            pins.gpio22.into_pull_up_input().into_dyn_pin(),
+            pins.gpio22.into_pull_down_input().into_dyn_pin(),
             None,
         ),
         ButtonState::new(
             "CC_Select",
-            pins.gpio23.into_pull_up_input().into_dyn_pin(),
+            pins.gpio23.into_pull_down_input().into_dyn_pin(),
             None,
         ),
         ButtonState::new(
             "Volume_Up",
-            pins.gpio24.into_pull_up_input().into_dyn_pin(),
+            pins.gpio24.into_pull_down_input().into_dyn_pin(),
             Some(Keyboard::VolumeUp),
         ),
         ButtonState::new(
             "Volume_Down",
-            pins.gpio25.into_pull_up_input().into_dyn_pin(),
+            pins.gpio25.into_pull_down_input().into_dyn_pin(),
             Some(Keyboard::VolumeDown),
         ),
         ButtonState::new(
             "Mute",
-            pins.gpio26.into_pull_up_input().into_dyn_pin(),
+            pins.gpio26.into_pull_down_input().into_dyn_pin(),
             Some(Keyboard::Mute),
         ),
     ];
 
     // LED strip control pin
-    let _led_strip_data_pin = pins.gpio27.into_push_pull_output();
+    let _led_strip_data_pin = pins.gpio27.into_pull_down_disabled();
 
     // encoder pins:
     let p1_encoder_pin_a = pins.gpio28.into_pull_up_input();
@@ -273,10 +299,10 @@ fn main() -> ! {
     let i2c_scl_pin = pins.gpio33.reconfigure();
 
     //SPI bus pins using SPI0 device: (reserved for future peripherals, not currently in use)
-    let _spi_cs_pin = pins.gpio34.into_pull_down_disabled();
-    let _spi_sck_pin = pins.gpio35.into_pull_down_disabled();
-    let _spi_tx_pin = pins.gpio36.into_pull_down_disabled();
-    let _spi_rx_pin = pins.gpio37.into_pull_down_disabled();
+    let _spi_sck_pin = pins.gpio34.into_pull_down_disabled();
+    let _spi_tx_pin = pins.gpio35.into_pull_down_disabled();
+    let _spi_rx_pin = pins.gpio36.into_pull_down_disabled();
+    let _spi_cs_pin = pins.gpio37.into_pull_down_disabled();
 
     // heartbeat LEDs
     let mut heartbeat_led_pin_core1 = pins.gpio38.into_push_pull_output();
@@ -312,7 +338,7 @@ fn main() -> ! {
             usbd_human_interface_device::device::keyboard::NKROBootKeyboardConfig::default(),
         )
         .build(&usb_bus);
-    //https://pid.codes
+    // https://pid.codes
     let mut usb_dev = UsbDeviceBuilder::new(&usb_bus, UsbVidPid(0x1209, 0x0001))
         .strings(&[StringDescriptors::default()
             .manufacturer("Tim Inc")
@@ -367,8 +393,8 @@ fn main() -> ! {
         ".wrap"
     );
 
-    let (mut pio, sm0, sm1, _, _) = pac.PIO0.split(&mut pac.RESETS);
-    let program = pio.install(&program.program).unwrap();
+    let (mut encoder_pio, encoder_sm0, encoder_sm1, _, _) = pac.PIO0.split(&mut pac.RESETS);
+    let program = encoder_pio.install(&program.program).unwrap();
     let program2 = unsafe { program.share() };
 
     let p1_encoder_pin_a_pin = p1_encoder_pin_a.id().num;
@@ -381,7 +407,7 @@ fn main() -> ! {
         .in_count(2)
         .in_shift_direction(rp235x_hal::pio::ShiftDirection::Left)
         .buffers(Buffers::OnlyRx)
-        .build(sm0);
+        .build(encoder_sm0);
     sm_p1.set_pindirs([
         (p1_encoder_pin_a_pin, hal::pio::PinDir::Input),
         (p1_encoder_pin_b_pin, hal::pio::PinDir::Input),
@@ -393,7 +419,7 @@ fn main() -> ! {
         .in_count(2)
         .in_shift_direction(rp235x_hal::pio::ShiftDirection::Left)
         .buffers(Buffers::OnlyRx)
-        .build(sm1);
+        .build(encoder_sm1);
     sm_p2.set_pindirs([
         (p2_encoder_pin_a_pin, hal::pio::PinDir::Input),
         (p2_encoder_pin_b_pin, hal::pio::PinDir::Input),
@@ -412,6 +438,15 @@ fn main() -> ! {
         .build();
     // Array of four 64 byte text buffers. Each buffer will be a line of text on the oled
     let mut line_bufs: [FmtBuf; 4] = [FmtBuf::new(), FmtBuf::new(), FmtBuf::new(), FmtBuf::new()];
+
+    // Set up WS2812 LED PIO:
+    // let (mut leds_pio, leds_sm0, _, _, _) = pac.PIO1.split(&mut pac.RESETS);
+    // let mut led_strip = Ws2812Direct::new(
+    //     led_strip_data_pin,
+    //     &mut leds_pio,
+    //     leds_sm0,
+    //     EXTERNAL_XTAL_FREQ,
+    // );
 
     //Start second core (core1) and begin its program loop:
     core1
@@ -433,18 +468,32 @@ fn main() -> ! {
             let mut frames_rendered = 0_u64; // variable for counting number of screen refreshes since reboot
             let mut _current_button_state = 0_u32;
             let mut _previous_button_state = 0_u32;
-            let mut encoder_p1_count: i32 = 0;
-            let mut encoder_p2_count: i32 = 0;
+            let mut encoder_p1_count = 0_i32;
+            let mut encoder_p2_count = 0_i32;
+            let mut last_led_update_ticks = 0_u64;
+            // let test_color = RGB8 {
+            //     r: 0,
+            //     g: 255,
+            //     b: 255,
+            // }
+            // .into();
 
             // core1 loop:
             loop {
                 //get core0 variable info:
                 let fifo_is_empty = (sio.fifo.status() & 0b1) == 0; // Bit 0 VLD: Value is 1 if this core’s RX FIFO is not empty (i.e. if FIFO_RD is valid) - RP235x datasheet pg. 67
                 if !fifo_is_empty {
-                    _current_button_state = sio.fifo.read_blocking();
-                    _previous_button_state = sio.fifo.read_blocking();
-                    encoder_p1_count = sio.fifo.read_blocking() as i32;
-                    encoder_p2_count = sio.fifo.read_blocking() as i32;
+                    for _ in 0..4 {
+                        let packed = sio.fifo.read_blocking();
+                        let (header, word) = extract_header_from_word(packed);
+                        match header {
+                            CURRENT_BUTTON_STATE_HEADER => _current_button_state = word,
+                            PREVIOUS_BUTTON_STATE_HEADER => _previous_button_state = word,
+                            ENCODER_P1_COUNT_HEADER => encoder_p1_count = sign_extend_27bit(word),
+                            ENCODER_P2_COUNT_HEADER => encoder_p2_count = sign_extend_27bit(word),
+                            _ => {} // unknown header, ignore
+                        }
+                    }
                 }
 
                 // core1 heartbeat blink:
@@ -452,6 +501,12 @@ fn main() -> ! {
                 {
                     heartbeat_led_pin_core1.toggle().unwrap();
                     last_core1_heartbeat_tick = timer.get_counter().ticks();
+                }
+
+                // core1 led strip update:
+                if timer.get_counter().ticks() > (last_led_update_ticks + LED_FRAME_TICKS) {
+                    last_led_update_ticks = timer.get_counter().ticks();
+                    // led_strip.write([color].iter().copied()).unwrap();
                 }
 
                 // core1 LCD screen updates:
@@ -500,6 +555,7 @@ fn main() -> ! {
     let mut encoder_p2_count = 0_i32;
     let mut encoder_p1_last_update_ticks = 0_u64;
     let mut encoder_p2_last_update_ticks = 0_u64;
+    let mut last_button_update_ticks = 0_u64;
 
     // core0 loop:
     loop {
@@ -515,15 +571,22 @@ fn main() -> ! {
         // prep button states for use on core1:
         let (current_button_state, previous_button_state) = encode_button_state(&buttons);
 
+        if current_button_state != previous_button_state {
+            last_button_update_ticks = timer.get_counter().ticks();
+        }
+
         // read encoder positions from FIFO buffers for use here AND on core1:
         while !rx_p1.is_empty() {
             if let Some(value) = rx_p1.read() {
                 if timer.get_counter().ticks()
                     > (encoder_p1_last_update_ticks + DEFAULT_ENCODER_DEBOUNCE_TICKS)
                 {
-                    encoder_p1_last_update_ticks = timer.get_counter().ticks();
-                    info!("Encoder P1 Position: {}", value as i32);
-                    encoder_p1_count = value as i32;
+                    if encoder_p1_count != value as i32 {
+                        encoder_p1_last_update_ticks = timer.get_counter().ticks();
+                        info!("Encoder P1 Position: {}", value as i32);
+                        encoder_p1_count = value as i32;
+                        last_button_update_ticks = timer.get_counter().ticks();
+                    }
                 }
             }
         }
@@ -532,20 +595,38 @@ fn main() -> ! {
                 if timer.get_counter().ticks()
                     > (encoder_p2_last_update_ticks + DEFAULT_ENCODER_DEBOUNCE_TICKS)
                 {
-                    encoder_p2_last_update_ticks = timer.get_counter().ticks();
-                    info!("Encoder P1 Position: {}", value as i32);
-                    encoder_p2_count = value as i32;
+                    if encoder_p2_count != value as i32 {
+                        encoder_p2_last_update_ticks = timer.get_counter().ticks();
+                        info!("Encoder P2 Position: {}", value as i32);
+                        encoder_p2_count = value as i32;
+                        last_button_update_ticks = timer.get_counter().ticks();
+                    }
                 }
             }
+        }
+
+        // since the source of truth on the encoder counts is in the PIO registers, we need to clear them ourselves ot reset the encoders.
+        // The easiest way I found to do this is to reset the chip after the idle timeout.
+        if timer.get_counter().ticks() > (last_button_update_ticks + TICKS_SINCE_LAST_STATE_CHANGE)
+        {
+            cortex_m::peripheral::SCB::sys_reset();
         }
 
         // send core1 data to core1 if it has room:
         let fifo_is_empty = (sio.fifo.status() & 0b1) == 0; // Bit 0 VLD: Value is 1 if this core’s RX FIFO is not empty (i.e. if FIFO_RD is valid) - RP235x datasheet pg. 67
         if fifo_is_empty {
-            sio.fifo.write(current_button_state as u32);
-            sio.fifo.write(previous_button_state as u32);
-            sio.fifo.write(encoder_p1_count as u32);
-            sio.fifo.write(encoder_p2_count as u32);
+            let packed_current_button_state =
+                add_header_to_word(CURRENT_BUTTON_STATE_HEADER, current_button_state);
+            let packed_previous_button_state =
+                add_header_to_word(PREVIOUS_BUTTON_STATE_HEADER, previous_button_state);
+            let packed_encoder_p1_count =
+                add_header_to_word(ENCODER_P1_COUNT_HEADER, encoder_p1_count as u32);
+            let packed_encoder_p2_count =
+                add_header_to_word(ENCODER_P2_COUNT_HEADER, encoder_p2_count as u32);
+            sio.fifo.write(packed_current_button_state);
+            sio.fifo.write(packed_previous_button_state);
+            sio.fifo.write(packed_encoder_p1_count);
+            sio.fifo.write(packed_encoder_p2_count);
         }
 
         // Sends a USB tick at the 1ms interval specified by USB spec
@@ -595,7 +676,7 @@ fn update_buttons(buttons: &mut [ButtonState], timer: &Timer<CopyableTimer0>) {
     //we want to update the buttons per their individual debounce timings, and store the current value in the struct itself.
     for button in buttons {
         if timer.get_counter().ticks() > (button.last_update_ticks + button.debounce_ticks) {
-            let current_button_state = button.pin.is_low().unwrap();
+            let current_button_state = button.pin.is_high().unwrap();
             if current_button_state != button.was_pressed {
                 button.last_update_ticks = timer.get_counter().ticks();
                 button.was_pressed = button.is_pressed;
@@ -642,10 +723,35 @@ fn get_keys(buttons: &[ButtonState]) -> [Keyboard; NUM_BUTTONS] {
     keyboard
 }
 
+/// This function will take a binary header value and place it in the top 5 bits of a 32 bit word
+fn add_header_to_word(header: u32, word: u32) -> u32 {
+    ((header & 0x1F) << 27) | (word & 0x07FF_FFFF)
+}
+
+/// Extracts the header (top 5 bits) and the original word (lower 27 bits, header bits zeroed)
+/// from a 32-bit word encoded by [`add_header_to_word`].
+/// Returns a tuple of `(header, word)` as `u32`s.
+fn extract_header_from_word(encoded: u32) -> (u32, u32) {
+    let header = (encoded >> 27) & 0x1F;
+    let word = encoded & 0x07FF_FFFF;
+    (header, word)
+}
+
+/// Sign-extends a 27-bit value (stored in the lower 27 bits of a `u32`) back to a full 32-bit
+/// signed integer. If bit 26 is set, bits 27–31 are filled with 1s to preserve the negative value.
+fn sign_extend_27bit(value: u32) -> i32 {
+    if value & 0x0400_0000 != 0 {
+        // bit 26 is set — negative, fill upper 5 bits with 1s
+        (value | 0xF800_0000) as i32
+    } else {
+        value as i32
+    }
+}
+
 // struct for storing all the button info to make iterative upating and configuring easier:
 pub struct ButtonState {
     pub name: &'static str,
-    pub pin: Pin<DynPinId, FunctionSioInput, PullUp>,
+    pub pin: Pin<DynPinId, FunctionSioInput, PullDown>,
     pub last_update_ticks: u64,
     pub debounce_ticks: u64,
     pub key: Option<Keyboard>,
@@ -657,7 +763,7 @@ impl ButtonState {
     /// Creates a new ButtonState struct using the default values where appropriate.
     fn new(
         name: &'static str,
-        pin: Pin<DynPinId, FunctionSioInput, PullUp>,
+        pin: Pin<DynPinId, FunctionSioInput, PullDown>,
         key: Option<Keyboard>,
     ) -> Self {
         Self {

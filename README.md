@@ -23,12 +23,12 @@ This is a rust program designed for the [Waveshare Core 2350B](https://www.waves
 - [x] Must Enumerate as an NKRO Keyboard via USB
 - [ ] Will accept Line-In Audio Signal for DSP Audio
 - [ ] Uses new rust lighting controller library
-- [ ] New PCB to accept all existing controller wiring
-	- [ ] Buttons w/ Responsive Lighting
-	- [ ] Both Encoders
-	- [ ] Lighting Power Control Relay Button
-	- [ ] Lighting Configuration Mode Button
-	- [ ] JTAG spring pin header for programming/debug
+- [x] New PCB to accept all existing controller wiring
+	- [x] Buttons w/ Responsive Lighting
+	- [x] Both Encoders
+	- [x] Lighting Power Control Relay Button
+	- [x] Lighting Configuration Mode Button
+	- [x] JTAG spring pin header for programming/debug
 - [ ] Add additional system control buttons with an OLED screen display to center panel
 	- [ ] Adjustable settings for gameplay in addition to lighting controller control?
 		- [ ] Change encoder step thresholds live and save locally
@@ -54,13 +54,20 @@ This is a rust program designed for the [Waveshare Core 2350B](https://www.waves
   	- 9 currently unused Pins to be available for additional features
     - Pin 47 is used by the PSRAM chip on the board, so it is unavailable.
 - [x] Dual-Cores Can be used to Prioritize Input over Cosmetic Features
-	- Main Core (High Priority, Low Latency Tasks):
-		- NKRO Keyboard and USB Bus
-		- Encoder Position Tracking
-	- Second Core (lower priority cosmetic only features)
-		- System Control menu handling / screen updates
-		- Lighting Controller Updates
-		- Audio DSP and FFT analysis
+	- [x] Main Core (High Priority, Low Latency Tasks):
+		- [x] NKRO Keyboard and USB Bus
+		- [x] Encoder Position Tracking
+		- [ ] encoder logic to decide when to send and release keypresses based on count changes
+	- [ ] Second Core (lower priority cosmetic only features)
+		- [ ] System Control menu handling / screen updates
+		- [ ] Lighting Controller Updates
+		- [ ] Audio DSP and FFT analysis
+		- [x] Data through sio.fifo register from first core:
+  		- [x] Button states, current and previous
+      - [x] both encoder counts
+      - [x] sio data unreliable getting 0s randomly
+        - [x] Need a way to confirm data is valid. Options:
+          - Use top 5 bits of each word to encode data type
 - [ ] Button Processing
 	- [x] https://github.com/dlkj/usbd-human-interface-device <- Tested and working
 	- [x] Send each button press via USB NKRO library at sample rate.
@@ -68,6 +75,7 @@ This is a rust program designed for the [Waveshare Core 2350B](https://www.waves
 	- [x] Planning to do button via polling, not interrupts.
 	- [x] Individual debounce timers for each button
 	- [x] USB updates sent to match the sample rate
+	- [x] Buttons use internal pull-down resistors to allow for external transistor control of LED lighting.
 	- [ ] handle control center buttons with menu system
 - [ ] Encoder processing
 	- [x] I used the asm from the [adamgreen github](https://github.com/adamgreen/QuadratureDecoder/blob/master/QuadratureDecoder.pio) example for PIO encoders
@@ -75,6 +83,8 @@ This is a rust program designed for the [Waveshare Core 2350B](https://www.waves
     - [x] implement encoder debounce - const for now, adjust later
 	- [ ] Revisit encoder position to input press logic from old controller to ensure it is working as intended
 	- [ ] Need to figure out how to send keyboard signals based on encoder position changes using the NKRO USB HID library
+  	- [x] SIO FIFO messages work mostly, but I am getting some rogue 0s displayed. Need to investigate.
+  - [x] add idle timeout to reset to 0 rotation if unused for a while. Like > 1hr
 - [ ] Lighting Controller [Github repo](https://github.com/kiyoshigawa/lighting_controller)
   - [ ] WS2812 led strip controller:
   	- [ ] https://github.com/rp-rs/ws2812-pio-rs ? Needs testing
@@ -108,27 +118,41 @@ This is a rust program designed for the [Waveshare Core 2350B](https://www.waves
 
 ### Hardware:
 
-- [ ] New Manufactured PCB, no longer hand-soldered on breadboards
-	- [ ] 0.2" o.c. Screw terminals for all existing wiring in case. I have these in abundance currently
-		- [ ] Buttons 
-		- [ ] Button LED Lighting to sink current when button is pressed, or find new way to handle that.
-		- [ ] LED Lighting for Power Relay Button, and also power relay control for board
-		- [ ] Encoder Connections
-		- [ ] LED Strip Connection
-		- [ ] System Control buttons/screen connection points
+- [x] New Manufactured PCB, no longer hand-soldered on breadboards - Ordered PCBs 2026-03-10
+	- [x] 0.2" o.c. Screw terminals for all existing wiring in case. I have these in abundance currently
+		- [x] Buttons 
+		- [x] Button LED Lighting to sink current when button is pressed, or find new way to handle that.
+  		- [x] Using discrete transistors to handle current form button LEDs. See circuit schematic. Had to switch to pull-downs for buttons.
+		- [x] ~~LED Lighting for Power Relay Button, and also power relay control for board~~
+  		- Not needed, using old power board
+		- [x] Encoder Connections
+		- [x] LED Strip Connection
+		- [x] System Control buttons/screen connection points
+		- [x] Bonus volume, mute, and escape buttons
+		- [x] 5 spare buttons with lighting circuit
 	- [x] Socket footprint for waveshare RP2350B footprint
+	- [x] Needs 10-pin 0.5mm header and 6-pin pogo pin JTAG footprints for easy programming/debug
+	- [x] Mounting holes planned to work with IIDX deck case
+	- [x] Figure out how to handle the flex cable USB connector
+		- [x] ~~Option 1: use the flex cable as the USB input and mount it in the case somewhere~~
+		- [x] Add a new USB connector using the U+/U- pins and mount that instead.
+	- [x] Fix backwards transistors on PCB for every light
+- [ ] Separate circuit board for line-in audio to limit output to protect ADC on RP2350B:
 	- [ ] Design circuit for DSP Inputs
 		- [ ] Handle stereo signal from barrel jack input(s)
 		- [ ] Have a limiter circuit that will clip at 3.3V to protect PI pin inputs
 		- [ ] Use voltage offset and/or half-wave-invert line level to allow capture by analog input pin
 			- [ ] Could also use an audio chip with I2S or similar if circuit testing goes poorly
-	- [ ] Needs 10-pin 0.5mm header and 6-pin pogo pin JTAG footprints for easy programming/debug
-	- [ ] Mounting holes planned to work with IIDX deck case
-	- [ ] Figure out how to handle the flex cable USB connector
-		- [ ] Option 1: use the flex cable as the USB input and mount it in the case somewhere
-		- [ ] Option 2: Add a new USB connector using the U+/U- pins and mount that instead.
-	- [ ]
-
+## Known issues to fix:
+- [x] USB stops working when macbook goes to sleep, which prevents main loop from functioning at all until I reconnect with probe.
+  - [x] Need to find a way to cleanly and automatically resume USB when the computer wakes up.
+  - [x] It looks like the main loop breaks completely when this happens, no heartbeat LED
+  - [x] encoder and button data should still make it to core 2 for lighting upates without USB
+  - [x] Determined this was just the probe-rs connection closing tht caused the loop to crash. Expected behavior as above when computer sleeps without probe-rs attached.
+- [x] core messages aren't consistent as written, sometimes get 0 values sent over for encoder
+  - [x] Investigate what else might be using sio fifo buffer - Nothing found.
+  - [x] Find a way to ensure the fifo data is tagged so I know what data is being sent?
+    - [x] Ended up adding a 5-bit header to the data sent so it will know what data each word read is. Haven't seen any glitches since.
 
 ## License info:
 
