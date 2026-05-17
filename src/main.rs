@@ -285,6 +285,11 @@ fn main() -> ! {
         ),
     ];
 
+    // RP2350-E9 hack to make pull-down inputs function properly.
+    for button in &mut buttons {
+        button.pin.set_input_enable(false);
+    }
+
     // LED strip control pin
     let _led_strip_data_pin = pins.gpio27.into_pull_down_disabled();
 
@@ -676,7 +681,9 @@ fn update_buttons(buttons: &mut [ButtonState], timer: &Timer<CopyableTimer0>) {
     //we want to update the buttons per their individual debounce timings, and store the current value in the struct itself.
     for button in buttons {
         if timer.get_counter().ticks() > (button.last_update_ticks + button.debounce_ticks) {
+            button.pin.set_input_enable(true); // RP2350-E9 hack to make pull-down inputs function properly.
             let current_button_state = button.pin.is_high().unwrap();
+            button.pin.set_input_enable(false); // RP2350-E9 hack to make pull-down inputs function properly.
             if current_button_state != button.was_pressed {
                 button.last_update_ticks = timer.get_counter().ticks();
                 button.was_pressed = button.is_pressed;

@@ -123,6 +123,7 @@ This is a rust program designed for the [Waveshare Core 2350B](https://www.waves
 		- [x] Buttons 
 		- [x] Button LED Lighting to sink current when button is pressed, or find new way to handle that.
   		- [x] Using discrete transistors to handle current form button LEDs. See circuit schematic. Had to switch to pull-downs for buttons.
+      - [x] Due to a hardware bug that causes latching when using oull-down resistors on GPIO pins, I had to hack in that the GPIO pins are not set as inputs until just before I read and set back just after. Google RP2350-E9 Errata for more info.
 		- [x] ~~LED Lighting for Power Relay Button, and also power relay control for board~~
   		- Not needed, using old power board
 		- [x] Encoder Connections
