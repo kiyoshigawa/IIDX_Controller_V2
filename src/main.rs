@@ -21,7 +21,7 @@ use defmt::info;
 use defmt_rtt as _;
 use embedded_graphics::{
     image::{Image, ImageRaw},
-    mono_font::{MonoTextStyleBuilder, ascii::FONT_9X18_BOLD},
+    mono_font::{MonoTextStyle, MonoTextStyleBuilder, ascii::FONT_9X18_BOLD},
     pixelcolor::BinaryColor,
     prelude::*,
     primitives::{PrimitiveStyle, Rectangle},
@@ -131,37 +131,36 @@ pub const BUTTON_GRAPHIC: [u8; 16*26] = [
 /// y Height at which the BUTTON_GRAPHIC gets drawn. I want it one pixels from the bottom of the 64 pixel screen, and it's 26 rows tall, so 63-26-2=36
 const BUTTON_GRAPHIC_ROW_HEIGHT: u8 = 36;
 
-/// Static rectangle coordinates for each button's position on the OLED debug overlay.
-/// These never change, so they're a const array rather than part of the ButtonState struct.
+/// Static rectangle coordinates for each button's position on the button graphic.
 #[rustfmt::skip]
-const BUTTON_DEBUG_RECTS: [Rectangle; NUM_BUTTONS] = [
-    Rectangle::new(Point::new( 18, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 20), Size::new(1, 3)),
-    Rectangle::new(Point::new( 22, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 10), Size::new(1, 3)),
-    Rectangle::new(Point::new( 26, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 20), Size::new(1, 3)),
-    Rectangle::new(Point::new( 30, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 10), Size::new(1, 3)),
-    Rectangle::new(Point::new( 34, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 20), Size::new(1, 3)),
-    Rectangle::new(Point::new( 38, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 10), Size::new(1, 3)),
-    Rectangle::new(Point::new( 42, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 20), Size::new(1, 3)),
-    Rectangle::new(Point::new( 22, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  2), Size::new(1, 1)),
-    Rectangle::new(Point::new( 38, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  2), Size::new(1, 1)),
-    Rectangle::new(Point::new( 85, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 20), Size::new(1, 3)),
-    Rectangle::new(Point::new( 89, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 10), Size::new(1, 3)),
-    Rectangle::new(Point::new( 93, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 20), Size::new(1, 3)),
-    Rectangle::new(Point::new( 97, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 10), Size::new(1, 3)),
-    Rectangle::new(Point::new(101, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 20), Size::new(1, 3)),
-    Rectangle::new(Point::new(105, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 10), Size::new(1, 3)),
-    Rectangle::new(Point::new(109, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 20), Size::new(1, 3)),
-    Rectangle::new(Point::new( 89, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  2), Size::new(1, 1)),
-    Rectangle::new(Point::new(105, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  2), Size::new(1, 1)),
-    Rectangle::new(Point::new( 51, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  2), Size::new(1, 1)),
-    Rectangle::new(Point::new( 63, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  9), Size::new(1, 1)),
-    Rectangle::new(Point::new( 63, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 23), Size::new(1, 1)),
-    Rectangle::new(Point::new( 56, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 16), Size::new(1, 1)),
-    Rectangle::new(Point::new( 70, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 16), Size::new(1, 1)),
-    Rectangle::new(Point::new( 63, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 16), Size::new(1, 1)),
-    Rectangle::new(Point::new( 59, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  2), Size::new(1, 1)),
-    Rectangle::new(Point::new( 67, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  2), Size::new(1, 1)),
-    Rectangle::new(Point::new( 75, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  2), Size::new(1, 1)),
+const BUTTON_DEBUG_RECTANGLES: [Rectangle; NUM_BUTTONS] = [
+    Rectangle::new(Point::new( 17, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 19), Size::new(3, 5)),
+    Rectangle::new(Point::new( 21, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  9), Size::new(3, 5)),
+    Rectangle::new(Point::new( 25, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 19), Size::new(3, 5)),
+    Rectangle::new(Point::new( 29, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  9), Size::new(3, 5)),
+    Rectangle::new(Point::new( 33, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 19), Size::new(3, 5)),
+    Rectangle::new(Point::new( 37, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  9), Size::new(3, 5)),
+    Rectangle::new(Point::new( 41, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 19), Size::new(3, 5)),
+    Rectangle::new(Point::new( 21, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  1), Size::new(3, 3)),
+    Rectangle::new(Point::new( 37, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  1), Size::new(3, 3)),
+    Rectangle::new(Point::new( 84, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 19), Size::new(3, 5)),
+    Rectangle::new(Point::new( 88, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  9), Size::new(3, 5)),
+    Rectangle::new(Point::new( 92, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 19), Size::new(3, 5)),
+    Rectangle::new(Point::new( 96, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  9), Size::new(3, 5)),
+    Rectangle::new(Point::new(100, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 19), Size::new(3, 5)),
+    Rectangle::new(Point::new(104, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  9), Size::new(3, 5)),
+    Rectangle::new(Point::new(108, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 19), Size::new(3, 5)),
+    Rectangle::new(Point::new( 88, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  1), Size::new(3, 3)),
+    Rectangle::new(Point::new(104, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  1), Size::new(3, 3)),
+    Rectangle::new(Point::new( 50, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  1), Size::new(3, 3)),
+    Rectangle::new(Point::new( 62, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  8), Size::new(3, 3)),
+    Rectangle::new(Point::new( 62, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 22), Size::new(3, 3)),
+    Rectangle::new(Point::new( 55, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 15), Size::new(3, 3)),
+    Rectangle::new(Point::new( 69, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 15), Size::new(3, 3)),
+    Rectangle::new(Point::new( 62, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 15), Size::new(3, 3)),
+    Rectangle::new(Point::new( 58, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  1), Size::new(3, 3)),
+    Rectangle::new(Point::new( 66, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  1), Size::new(3, 3)),
+    Rectangle::new(Point::new( 74, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  1), Size::new(3, 3)),
 ];
 
 /// Tell the Boot ROM about our application:
@@ -591,65 +590,13 @@ fn main() -> ! {
 
                     frames_rendered += 1;
 
-                    // Update the lines to be written:
-                    for line in &mut line_bufs {
-                        line.reset();
-                    }
-                    write!(&mut line_bufs[0], "fc: {}", frames_rendered).unwrap();
-                    write!(&mut line_bufs[1], "{}", status.encoder_p1_count).unwrap();
-                    write!(&mut line_bufs[2], "{}", status.encoder_p2_count).unwrap();
-                    write!(&mut line_bufs[3], "Not used").unwrap();
-
-                    // Empty the display:
-                    let color = embedded_graphics::pixelcolor::BinaryColor::Off;
-                    display.clear(color).unwrap();
-
-                    // Framecount.
-                    Text::with_baseline(
-                        &mut line_bufs[0].as_str(),
-                        Point::new(0, 0),
-                        text_style,
-                        Baseline::Top,
-                    )
-                    .draw(&mut display)
-                    .unwrap();
-
-                    // Encoder 1:
-                    Text::with_alignment(
-                        &mut line_bufs[1].as_str(),
-                        Point::new(0, 32),
-                        text_style,
-                        Alignment::Left,
-                    )
-                    .draw(&mut display)
-                    .unwrap();
-
-                    // Encoder 2:
-                    Text::with_alignment(
-                        &mut line_bufs[2].as_str(),
-                        Point::new(127, 32),
-                        text_style,
-                        Alignment::Right,
-                    )
-                    .draw(&mut display)
-                    .unwrap();
-
-                    draw_empty_button_graphic(
+                    print_debug_display(
                         &mut display,
-                        BUTTON_GRAPHIC_ROW_HEIGHT,
-                        &BUTTON_GRAPHIC,
+                        &status,
+                        &mut line_bufs,
+                        text_style,
+                        frames_rendered,
                     );
-
-                    // Debug: draw a filled rectangle for each button at its debug_rect_coords location.
-                    // These are static coordinate snapshots (not updated at runtime) but useful
-                    // for verifying the layout matches the physical button positions.
-                    for rect in &BUTTON_DEBUG_RECTS {
-                        rect.into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-                            .draw(&mut display)
-                            .unwrap();
-                    }
-
-                    display.flush().unwrap();
                 }
             }
         })
@@ -869,6 +816,88 @@ pub fn draw_empty_button_graphic<D>(
     let raw = ImageRaw::<BinaryColor>::new(raw_image, 128);
     let image = Image::new(&raw, Point::new(0, y_start as i32));
     image.draw(display).unwrap();
+}
+
+/// Draws filled rectangles for each pressed button based on the 27-bit encoded button state.
+/// Bits 0-26 of `state` correspond to the 27 rectangles in `BUTTON_DEBUG_RECTANGLES`.
+/// Only rectangles for pressed buttons (bit = 1) are drawn into the buffer.
+pub fn draw_pressed_buttons<D>(
+    display: &mut Ssd1306<D, DisplaySize128x64, BufferedGraphicsMode<DisplaySize128x64>>,
+    state: u32,
+) where
+    D: WriteOnlyDataCommand,
+{
+    for (i, rect) in BUTTON_DEBUG_RECTANGLES.iter().enumerate() {
+        if (state >> i) & 1 == 1 {
+            rect.into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                .draw(display)
+                .unwrap();
+        }
+    }
+}
+
+/// Prints the full debug display to the OLED: resets and writes the text lines,
+/// clears the display, draws the frame counter, encoder counts, the button layout
+/// graphic, and pressed-button indicator dots.
+fn print_debug_display<'a, D>(
+    display: &mut Ssd1306<D, DisplaySize128x64, BufferedGraphicsMode<DisplaySize128x64>>,
+    status: &InputState,
+    line_bufs: &'a mut [FmtBuf; 4],
+    text_style: MonoTextStyle<'a, BinaryColor>,
+    frames_rendered: u64,
+) where
+    D: WriteOnlyDataCommand,
+{
+    // Update the lines to be written:
+    for line in line_bufs.iter_mut() {
+        line.reset();
+    }
+    write!(line_bufs[0], "fc: {}", frames_rendered).unwrap();
+    write!(line_bufs[1], "{}", status.encoder_p1_count).unwrap();
+    write!(line_bufs[2], "{}", status.encoder_p2_count).unwrap();
+    write!(line_bufs[3], "Not used").unwrap();
+
+    // Empty the display:
+    let color = embedded_graphics::pixelcolor::BinaryColor::Off;
+    display.clear(color).unwrap();
+
+    // Framecount.
+    Text::with_baseline(
+        line_bufs[0].as_str(),
+        Point::new(0, 0),
+        text_style,
+        Baseline::Top,
+    )
+    .draw(display)
+    .unwrap();
+
+    // Encoder 1:
+    Text::with_alignment(
+        line_bufs[1].as_str(),
+        Point::new(0, 32),
+        text_style,
+        Alignment::Left,
+    )
+    .draw(display)
+    .unwrap();
+
+    // Encoder 2:
+    Text::with_alignment(
+        line_bufs[2].as_str(),
+        Point::new(127, 32),
+        text_style,
+        Alignment::Right,
+    )
+    .draw(display)
+    .unwrap();
+
+    // Draw button graphic with open keys to be filled if pressed later
+    draw_empty_button_graphic(display, BUTTON_GRAPHIC_ROW_HEIGHT, &BUTTON_GRAPHIC);
+
+    // Draw indicator dots for pressed buttons based on current button state:
+    draw_pressed_buttons(display, status.current_button_state);
+
+    display.flush().unwrap();
 }
 
 // struct for storing all the button info to make iterative upating and configuring easier:
