@@ -24,6 +24,7 @@ use embedded_graphics::{
     mono_font::{MonoTextStyleBuilder, ascii::FONT_9X18_BOLD},
     pixelcolor::BinaryColor,
     prelude::*,
+    primitives::{PrimitiveStyle, Rectangle},
     text::{Alignment, Baseline, Text},
 };
 use embedded_hal::digital::*;
@@ -125,6 +126,42 @@ pub const BUTTON_GRAPHIC: [u8; 16*26] = [
     0b00000110, 0b00000000, 0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b00000000, 0b00000100, 0b01000000, 0b00000000, 0b00010001, 0b00010001, 0b00010001, 0b00010001, 0b00000000, 0b01100000, // Row 24
     0b00011000, 0b00000000, 0b11111000, 0b11111000, 0b11111000, 0b11111000, 0b00000000, 0b00000100, 0b01000000, 0b00000000, 0b00011111, 0b00011111, 0b00011111, 0b00011111, 0b00000000, 0b00011000, // Row 25
     0b11100000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000111, 0b11000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000111, // Row 26
+];
+
+/// y Height at which the BUTTON_GRAPHIC gets drawn. I want it one pixels from the bottom of the 64 pixel screen, and it's 26 rows tall, so 63-26-2=36
+const BUTTON_GRAPHIC_ROW_HEIGHT: u8 = 36;
+
+/// Static rectangle coordinates for each button's position on the OLED debug overlay.
+/// These never change, so they're a const array rather than part of the ButtonState struct.
+#[rustfmt::skip]
+const BUTTON_DEBUG_RECTS: [Rectangle; NUM_BUTTONS] = [
+    Rectangle::new(Point::new( 18, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 20), Size::new(1, 3)),
+    Rectangle::new(Point::new( 22, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 10), Size::new(1, 3)),
+    Rectangle::new(Point::new( 26, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 20), Size::new(1, 3)),
+    Rectangle::new(Point::new( 30, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 10), Size::new(1, 3)),
+    Rectangle::new(Point::new( 34, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 20), Size::new(1, 3)),
+    Rectangle::new(Point::new( 38, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 10), Size::new(1, 3)),
+    Rectangle::new(Point::new( 42, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 20), Size::new(1, 3)),
+    Rectangle::new(Point::new( 22, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  2), Size::new(1, 1)),
+    Rectangle::new(Point::new( 38, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  2), Size::new(1, 1)),
+    Rectangle::new(Point::new( 85, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 20), Size::new(1, 3)),
+    Rectangle::new(Point::new( 89, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 10), Size::new(1, 3)),
+    Rectangle::new(Point::new( 93, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 20), Size::new(1, 3)),
+    Rectangle::new(Point::new( 97, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 10), Size::new(1, 3)),
+    Rectangle::new(Point::new(101, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 20), Size::new(1, 3)),
+    Rectangle::new(Point::new(105, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 10), Size::new(1, 3)),
+    Rectangle::new(Point::new(109, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 20), Size::new(1, 3)),
+    Rectangle::new(Point::new( 89, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  2), Size::new(1, 1)),
+    Rectangle::new(Point::new(105, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  2), Size::new(1, 1)),
+    Rectangle::new(Point::new( 51, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  2), Size::new(1, 1)),
+    Rectangle::new(Point::new( 63, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  9), Size::new(1, 1)),
+    Rectangle::new(Point::new( 63, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 23), Size::new(1, 1)),
+    Rectangle::new(Point::new( 56, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 16), Size::new(1, 1)),
+    Rectangle::new(Point::new( 70, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 16), Size::new(1, 1)),
+    Rectangle::new(Point::new( 63, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 16), Size::new(1, 1)),
+    Rectangle::new(Point::new( 59, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  2), Size::new(1, 1)),
+    Rectangle::new(Point::new( 67, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  2), Size::new(1, 1)),
+    Rectangle::new(Point::new( 75, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  2), Size::new(1, 1)),
 ];
 
 /// Tell the Boot ROM about our application:
@@ -504,10 +541,7 @@ fn main() -> ! {
             let core1_heartbeat_rate = 1_000_000_u64 / 3; // 3Hz in timer ticks
             let mut last_screen_update_ticks = 0_u64;
             let mut frames_rendered = 0_u64; // variable for counting number of screen refreshes since reboot
-            let mut _current_button_state = 0_u32;
-            let mut _previous_button_state = 0_u32;
-            let mut encoder_p1_count = 0_i32;
-            let mut encoder_p2_count = 0_i32;
+            let mut status = InputState::new();
             let mut last_led_update_ticks = 0_u64;
             // let test_color = RGB8 {
             //     r: 0,
@@ -525,10 +559,14 @@ fn main() -> ! {
                         let packed = sio.fifo.read_blocking();
                         let (header, word) = extract_header_from_word(packed);
                         match header {
-                            CURRENT_BUTTON_STATE_HEADER => _current_button_state = word,
-                            PREVIOUS_BUTTON_STATE_HEADER => _previous_button_state = word,
-                            ENCODER_P1_COUNT_HEADER => encoder_p1_count = sign_extend_27bit(word),
-                            ENCODER_P2_COUNT_HEADER => encoder_p2_count = sign_extend_27bit(word),
+                            CURRENT_BUTTON_STATE_HEADER => status.current_button_state = word,
+                            PREVIOUS_BUTTON_STATE_HEADER => status.previous_button_state = word,
+                            ENCODER_P1_COUNT_HEADER => {
+                                status.encoder_p1_count = sign_extend_27bit(word)
+                            }
+                            ENCODER_P2_COUNT_HEADER => {
+                                status.encoder_p2_count = sign_extend_27bit(word)
+                            }
                             _ => {} // unknown header, ignore
                         }
                     }
@@ -558,14 +596,15 @@ fn main() -> ! {
                         line.reset();
                     }
                     write!(&mut line_bufs[0], "fc: {}", frames_rendered).unwrap();
-                    write!(&mut line_bufs[1], "Line 2 is fixed.").unwrap();
-                    write!(&mut line_bufs[2], "{}", encoder_p1_count).unwrap();
-                    write!(&mut line_bufs[3], "{}", encoder_p2_count).unwrap();
+                    write!(&mut line_bufs[1], "{}", status.encoder_p1_count).unwrap();
+                    write!(&mut line_bufs[2], "{}", status.encoder_p2_count).unwrap();
+                    write!(&mut line_bufs[3], "Not used").unwrap();
 
                     // Empty the display:
                     let color = embedded_graphics::pixelcolor::BinaryColor::Off;
                     display.clear(color).unwrap();
 
+                    // Framecount.
                     Text::with_baseline(
                         &mut line_bufs[0].as_str(),
                         Point::new(0, 0),
@@ -575,8 +614,9 @@ fn main() -> ! {
                     .draw(&mut display)
                     .unwrap();
 
+                    // Encoder 1:
                     Text::with_alignment(
-                        &mut line_bufs[2].as_str(),
+                        &mut line_bufs[1].as_str(),
                         Point::new(0, 32),
                         text_style,
                         Alignment::Left,
@@ -584,8 +624,9 @@ fn main() -> ! {
                     .draw(&mut display)
                     .unwrap();
 
+                    // Encoder 2:
                     Text::with_alignment(
-                        &mut line_bufs[3].as_str(),
+                        &mut line_bufs[2].as_str(),
                         Point::new(127, 32),
                         text_style,
                         Alignment::Right,
@@ -593,7 +634,20 @@ fn main() -> ! {
                     .draw(&mut display)
                     .unwrap();
 
-                    draw_empty_button_graphic(&mut display, 37, &BUTTON_GRAPHIC);
+                    draw_empty_button_graphic(
+                        &mut display,
+                        BUTTON_GRAPHIC_ROW_HEIGHT,
+                        &BUTTON_GRAPHIC,
+                    );
+
+                    // Debug: draw a filled rectangle for each button at its debug_rect_coords location.
+                    // These are static coordinate snapshots (not updated at runtime) but useful
+                    // for verifying the layout matches the physical button positions.
+                    for rect in &BUTTON_DEBUG_RECTS {
+                        rect.into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                            .draw(&mut display)
+                            .unwrap();
+                    }
 
                     display.flush().unwrap();
                 }
@@ -856,6 +910,27 @@ impl ButtonState {
     /// Will return false if the button state is the same as its previous state or if the button was pressed
     fn _release_occurred_this_update(&self) -> bool {
         !self.is_pressed && self.was_pressed
+    }
+}
+
+/// struct for storing the current state of the inputs received from core0, to make
+/// passing them from the core1 FIFO read area to the rest of the core1 loop easier:
+pub struct InputState {
+    pub current_button_state: u32,
+    pub previous_button_state: u32,
+    pub encoder_p1_count: i32,
+    pub encoder_p2_count: i32,
+}
+
+impl InputState {
+    /// Creates a new InputState struct with default values of 0 for all fields.
+    fn new() -> Self {
+        Self {
+            current_button_state: 0_u32,
+            previous_button_state: 0_u32,
+            encoder_p1_count: 0_i32,
+            encoder_p2_count: 0_i32,
+        }
     }
 }
 
