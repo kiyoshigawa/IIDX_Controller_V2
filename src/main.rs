@@ -20,10 +20,11 @@ use core::fmt::Write;
 use defmt::info;
 use defmt_rtt as _;
 use embedded_graphics::{
+    image::{Image, ImageRaw},
     mono_font::{MonoTextStyleBuilder, ascii::FONT_9X18_BOLD},
     pixelcolor::BinaryColor,
     prelude::*,
-    text::{Baseline, Text},
+    text::{Alignment, Baseline, Text},
 };
 use embedded_hal::digital::*;
 use fugit::RateExtU32;
@@ -38,7 +39,7 @@ use rp235x_hal::{
     pac,
     pio::{Buffers, PIOExt},
 };
-use ssd1306::{Ssd1306, prelude::*};
+use ssd1306::{Ssd1306, mode::BufferedGraphicsMode, prelude::*};
 use usb_device::{bus::*, class_prelude::*, prelude::*};
 use usbd_human_interface_device::{page::Keyboard, prelude::*};
 
@@ -93,6 +94,38 @@ const ENCODER_P2_COUNT_HEADER: u32 = 0b10111;
 /// (buttons or encoder) after this amount of time, the encoder counts will reset to 0.
 /// time is in ticks (1,000,000 ticks per second)
 const TICKS_SINCE_LAST_STATE_CHANGE: u64 = 10_000_000 * 900;
+
+/// This is a binary pixel representation of the IIDX Deck's control layout
+/// that I use for control debug on the OLED. 0=off, 1=on:
+#[rustfmt::skip]
+pub const BUTTON_GRAPHIC: [u8; 16*26] = [
+    0b00000000, 0b00000000, 0b00001111, 0b10000000, 0b00001111, 0b10000000, 0b01111100, 0b01111100, 0b01111100, 0b01111100, 0b00000001, 0b11110000, 0b00000001, 0b11110000, 0b00000000, 0b00000000, // Row 1
+    0b11100000, 0b00000000, 0b00001000, 0b10000000, 0b00001000, 0b10000000, 0b01000100, 0b01000100, 0b01000100, 0b01000100, 0b00000001, 0b00010000, 0b00000001, 0b00010000, 0b00000000, 0b00000111, // Row 2
+    0b00011000, 0b00000000, 0b00001000, 0b10000000, 0b00001000, 0b10000000, 0b01000100, 0b01000100, 0b01000100, 0b01000100, 0b00000001, 0b00010000, 0b00000001, 0b00010000, 0b00000000, 0b00011000, // Row 3
+    0b00000110, 0b00000000, 0b00001000, 0b10000000, 0b00001000, 0b10000000, 0b01000100, 0b01000100, 0b01000100, 0b01000100, 0b00000001, 0b00010000, 0b00000001, 0b00010000, 0b00000000, 0b01100000, // Row 4
+    0b00000001, 0b00000000, 0b00001111, 0b10000000, 0b00001111, 0b10000000, 0b01111100, 0b01111100, 0b01111100, 0b01111100, 0b00000001, 0b11110000, 0b00000001, 0b11110000, 0b00000000, 0b10000000, // Row 5
+    0b00000000, 0b10000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000001, 0b00000000, // Row 6
+    0b00000000, 0b01000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000010, 0b00000000, // Row 7
+    0b00000000, 0b01000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000111, 0b11000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000010, 0b00000000, // Row 8
+    0b00000000, 0b00100000, 0b00001111, 0b10001111, 0b10001111, 0b10000000, 0b00000000, 0b00000100, 0b01000000, 0b00000000, 0b00000001, 0b11110001, 0b11110001, 0b11110000, 0b00000100, 0b00000000, // Row 9
+    0b00000000, 0b00100000, 0b00001000, 0b10001000, 0b10001000, 0b10000000, 0b00000000, 0b00000100, 0b01000000, 0b00000000, 0b00000001, 0b00010001, 0b00010001, 0b00010000, 0b00000100, 0b00000000, // Row 10
+    0b00000000, 0b00010000, 0b00001000, 0b10001000, 0b10001000, 0b10000000, 0b00000000, 0b00000100, 0b01000000, 0b00000000, 0b00000001, 0b00010001, 0b00010001, 0b00010000, 0b00001000, 0b00000000, // Row 11
+    0b00000000, 0b00010000, 0b00001000, 0b10001000, 0b10001000, 0b10000000, 0b00000000, 0b00000111, 0b11000000, 0b00000000, 0b00000001, 0b00010001, 0b00010001, 0b00010000, 0b00001000, 0b00000000, // Row 12
+    0b00000000, 0b00010000, 0b00001000, 0b10001000, 0b10001000, 0b10000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000001, 0b00010001, 0b00010001, 0b00010000, 0b00001000, 0b00000000, // Row 13
+    0b10000000, 0b00010000, 0b00001000, 0b10001000, 0b10001000, 0b10000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000001, 0b00010001, 0b00010001, 0b00010000, 0b00001000, 0b00000001, // Row 14
+    0b00000000, 0b00010000, 0b00001111, 0b10001111, 0b10001111, 0b10000000, 0b00000011, 0b11100111, 0b11001111, 0b10000000, 0b00000001, 0b11110001, 0b11110001, 0b11110000, 0b00001000, 0b00000000, // Row 15
+    0b00000000, 0b00010000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000010, 0b00100100, 0b01001000, 0b10000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00001000, 0b00000000, // Row 16
+    0b00000000, 0b00010000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000010, 0b00100100, 0b01001000, 0b10000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00001000, 0b00000000, // Row 17
+    0b00000000, 0b00100000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000010, 0b00100100, 0b01001000, 0b10000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000100, 0b00000000, // Row 18
+    0b00000000, 0b00100000, 0b11111000, 0b11111000, 0b11111000, 0b11111000, 0b00000011, 0b11100111, 0b11001111, 0b10000000, 0b00011111, 0b00011111, 0b00011111, 0b00011111, 0b00000100, 0b00000000, // Row 19
+    0b00000000, 0b01000000, 0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00010001, 0b00010001, 0b00010001, 0b00010001, 0b00000010, 0b00000000, // Row 20
+    0b00000000, 0b01000000, 0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00010001, 0b00010001, 0b00010001, 0b00010001, 0b00000010, 0b00000000, // Row 21
+    0b00000000, 0b10000000, 0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b00000000, 0b00000111, 0b11000000, 0b00000000, 0b00010001, 0b00010001, 0b00010001, 0b00010001, 0b00000001, 0b00000000, // Row 22
+    0b00000001, 0b00000000, 0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b00000000, 0b00000100, 0b01000000, 0b00000000, 0b00010001, 0b00010001, 0b00010001, 0b00010001, 0b00000000, 0b10000000, // Row 23
+    0b00000110, 0b00000000, 0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b00000000, 0b00000100, 0b01000000, 0b00000000, 0b00010001, 0b00010001, 0b00010001, 0b00010001, 0b00000000, 0b01100000, // Row 24
+    0b00011000, 0b00000000, 0b11111000, 0b11111000, 0b11111000, 0b11111000, 0b00000000, 0b00000100, 0b01000000, 0b00000000, 0b00011111, 0b00011111, 0b00011111, 0b00011111, 0b00000000, 0b00011000, // Row 25
+    0b11100000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000111, 0b11000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000111, // Row 26
+];
 
 /// Tell the Boot ROM about our application:
 #[unsafe(link_section = ".start_block")]
@@ -526,25 +559,42 @@ fn main() -> ! {
                     }
                     write!(&mut line_bufs[0], "fc: {}", frames_rendered).unwrap();
                     write!(&mut line_bufs[1], "Line 2 is fixed.").unwrap();
-                    write!(&mut line_bufs[2], "enc1: {}", encoder_p1_count).unwrap();
-                    write!(&mut line_bufs[3], "enc2: {}", encoder_p2_count).unwrap();
+                    write!(&mut line_bufs[2], "{}", encoder_p1_count).unwrap();
+                    write!(&mut line_bufs[3], "{}", encoder_p2_count).unwrap();
 
                     // Empty the display:
                     let color = embedded_graphics::pixelcolor::BinaryColor::Off;
                     display.clear(color).unwrap();
 
-                    // Write the buffers to the display buffer and update the screen:
-                    for (i, line) in line_bufs.iter().enumerate() {
-                        let line_top_pixel = 16 * i as i32;
-                        Text::with_baseline(
-                            line.as_str(),
-                            Point::new(0, line_top_pixel),
-                            text_style,
-                            Baseline::Top,
-                        )
-                        .draw(&mut display)
-                        .unwrap();
-                    }
+                    Text::with_baseline(
+                        &mut line_bufs[0].as_str(),
+                        Point::new(0, 0),
+                        text_style,
+                        Baseline::Top,
+                    )
+                    .draw(&mut display)
+                    .unwrap();
+
+                    Text::with_alignment(
+                        &mut line_bufs[2].as_str(),
+                        Point::new(0, 32),
+                        text_style,
+                        Alignment::Left,
+                    )
+                    .draw(&mut display)
+                    .unwrap();
+
+                    Text::with_alignment(
+                        &mut line_bufs[3].as_str(),
+                        Point::new(127, 32),
+                        text_style,
+                        Alignment::Right,
+                    )
+                    .draw(&mut display)
+                    .unwrap();
+
+                    draw_empty_button_graphic(&mut display, 37, &BUTTON_GRAPHIC);
+
                     display.flush().unwrap();
                 }
             }
@@ -753,6 +803,18 @@ fn sign_extend_27bit(value: u32) -> i32 {
     } else {
         value as i32
     }
+}
+
+pub fn draw_empty_button_graphic<D>(
+    display: &mut Ssd1306<D, DisplaySize128x64, BufferedGraphicsMode<DisplaySize128x64>>,
+    y_start: u8,
+    raw_image: &[u8],
+) where
+    D: WriteOnlyDataCommand,
+{
+    let raw = ImageRaw::<BinaryColor>::new(raw_image, 128);
+    let image = Image::new(&raw, Point::new(0, y_start as i32));
+    image.draw(display).unwrap();
 }
 
 // struct for storing all the button info to make iterative upating and configuring easier:
