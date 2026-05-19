@@ -537,7 +537,7 @@ fn main() -> ! {
             // don't use this area for shared peripherals, they should be set up outside this function
 
             let menu_handler = MenuHandler::new();
-            let mut input_handler = InputHandler::new(menu_handler);
+            let mut input_handler = InputHandler::new(menu_handler, &mut display);
 
             // core1 loop state variables:
             let mut last_core1_heartbeat_tick = 0_u64; // last time core 1 toggled its LED
@@ -595,7 +595,7 @@ fn main() -> ! {
                     frames_rendered += 1;
 
                     print_debug_display(
-                        &mut display,
+                        &mut input_handler.display,
                         &states,
                         &mut line_bufs,
                         text_style,
@@ -813,7 +813,10 @@ fn sign_extend_27bit(value: u32) -> i32 {
 }
 
 /// This will check to see if a CC button has changed state and send any button events needed.
-pub fn detect_input_changes(states: &InputState, menu_state: &mut InputHandler) {
+pub fn detect_input_changes<'a, D: WriteOnlyDataCommand>(
+    states: &InputState,
+    menu_state: &mut InputHandler<'a, D>,
+) {
     for button in ButtonOffsets::iter() {
         let offset = button as usize;
         let current_button_state = (states.current_button_state >> offset) & 1 == 1;
@@ -861,7 +864,7 @@ pub fn draw_pressed_buttons<D>(
 /// graphic, and pressed-button indicator dots.
 fn print_debug_display<'a, D>(
     display: &mut Ssd1306<D, DisplaySize128x64, BufferedGraphicsMode<DisplaySize128x64>>,
-    status: &InputState,
+    states: &InputState,
     line_bufs: &'a mut [FmtBuf; 4],
     text_style: MonoTextStyle<'a, BinaryColor>,
     frames_rendered: u64,
@@ -873,8 +876,8 @@ fn print_debug_display<'a, D>(
         line.reset();
     }
     write!(line_bufs[0], "fc: {}", frames_rendered).unwrap();
-    write!(line_bufs[1], "{}", status.encoder_p1_count).unwrap();
-    write!(line_bufs[2], "{}", status.encoder_p2_count).unwrap();
+    write!(line_bufs[1], "{}", states.encoder_p1_count).unwrap();
+    write!(line_bufs[2], "{}", states.encoder_p2_count).unwrap();
     write!(line_bufs[3], "Not used").unwrap();
 
     // Empty the display:
@@ -915,7 +918,7 @@ fn print_debug_display<'a, D>(
     draw_empty_button_graphic(display, BUTTON_GRAPHIC_ROW_HEIGHT, &BUTTON_GRAPHIC);
 
     // Draw indicator dots for pressed buttons based on current button state:
-    draw_pressed_buttons(display, status.current_button_state);
+    draw_pressed_buttons(display, states.current_button_state);
 
     display.flush().unwrap();
 }
@@ -1026,19 +1029,27 @@ impl InputState {
     }
 }
 
-pub struct InputHandler {
+pub struct InputHandler<'a, D> {
     pub menu_handler: MenuHandler,
+    pub display: &'a mut Ssd1306<D, DisplaySize128x64, BufferedGraphicsMode<DisplaySize128x64>>,
 }
 
-impl InputHandler {
-    fn new(menu_handler: MenuHandler) -> Self {
-        Self { menu_handler }
+impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
+    fn new(
+        menu_handler: MenuHandler,
+        display: &'a mut Ssd1306<D, DisplaySize128x64, BufferedGraphicsMode<DisplaySize128x64>>,
+    ) -> Self {
+        Self {
+            menu_handler,
+            display,
+        }
     }
 
     fn process_event(&mut self, event: ButtonEvents) {
         match event {
             ButtonEvents::Press(button) => {
-                self.menu_handler.process_event(MenuEvents::Press(button));
+                self.menu_handler
+                    .process_event(MenuEvents::Press(button), &mut self.display);
             }
             ButtonEvents::Release(button) => debug!("RELEASE! {}", button as usize),
         };
@@ -1052,10 +1063,23 @@ impl MenuHandler {
         Self {}
     }
 
-    fn process_event(&mut self, event: MenuEvents) {
+    fn process_event<'a, D>(
+        &mut self,
+        event: MenuEvents,
+        display: &'a mut Ssd1306<D, DisplaySize128x64, BufferedGraphicsMode<DisplaySize128x64>>,
+    ) where
+        D: WriteOnlyDataCommand,
+    {
         match event {
-            MenuEvents::Press(button) => debug!("MENU PRESS! {}", button as usize),
+            MenuEvents::Press(button) => {
+                debug!("MENU PRESS! {}", button as usize);
+                Rectangle::new(Point::new(0, 0), Size::new(127, 63))
+                    .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                    .draw(display)
+                    .unwrap();
+            }
         }
+        display.flush().unwrap();
     }
 }
 
