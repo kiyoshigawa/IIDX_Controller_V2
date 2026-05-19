@@ -4,12 +4,21 @@ name = "IIDX_Controller_v2"
 version = "0.1.0"
 license = "GPL-3.0-or-later for new work AND (MIT OR Apache-2.0) for original template"
 
+[lib]
+name = "iidx_controller_v2"
+path = "src/lib/mod.rs"
+
+[[bin]]
+name = "main"
+path = "src/bin/main.rs"
+
 [dependencies]
 cortex-m = "0.7.0"
 cortex-m-rt = "0.7.0"
 critical-section = "1.2.0"
 defmt = "1.0.0"
 defmt-rtt = "1.0.0"
+display-interface = "0.5.0"
 embedded-graphics = "0.8.2"
 embedded-hal = "1.0.0"
 fugit = "0.3.6"
@@ -21,11 +30,6 @@ usb-device = "0.3.2"
 usbd-serial = "0.2.2"
 
 # Dependencies with features or package renames:
-
-# [dependencies.embedded_hal_0_2]
-# package = "embedded-hal"
-# version = "0.2.7"
-# features = ["unproven"]
 
 [dependencies.panic-probe]
 version = "1"
