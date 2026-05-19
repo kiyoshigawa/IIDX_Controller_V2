@@ -45,6 +45,9 @@ use strum::{EnumIter, IntoEnumIterator};
 use usb_device::{bus::*, class_prelude::*, prelude::*};
 use usbd_human_interface_device::{page::Keyboard, prelude::*};
 
+/// Type alias for the OLED display used throughout this project.
+type OledDisplay<D> = Ssd1306<D, DisplaySize128x64, BufferedGraphicsMode<DisplaySize128x64>>;
+
 /// The frequency of the external clock crystal on the board:
 const EXTERNAL_XTAL_FREQ: u32 = 12_000_000u32;
 
@@ -544,14 +547,7 @@ fn main() -> ! {
             let mut last_core1_heartbeat_tick = 0_u64; // last time core 1 toggled its LED
             let core1_heartbeat_rate = 1_000_000_u64 / 3; // 3Hz in timer ticks
             let mut last_screen_update_ticks = 0_u64;
-
             let mut last_led_update_ticks = 0_u64;
-            // let test_color = RGB8 {
-            //     r: 0,
-            //     g: 255,
-            //     b: 255,
-            // }
-            // .into();
 
             // core1 loop:
             loop {
@@ -592,7 +588,6 @@ fn main() -> ! {
                 // core1 LCD screen updates:
                 if timer.get_counter().ticks() > (last_screen_update_ticks + SCREEN_REFRESH_TICKS) {
                     last_screen_update_ticks = timer.get_counter().ticks();
-
                     input_handler.update_display();
                 }
 
@@ -640,7 +635,6 @@ fn main() -> ! {
                 {
                     if encoder_p1_count != value as i32 {
                         encoder_p1_last_update_ticks = timer.get_counter().ticks();
-                        info!("Encoder P1 Position: {}", value as i32);
                         encoder_p1_count = value as i32;
                         last_button_update_ticks = timer.get_counter().ticks();
                     }
@@ -654,7 +648,6 @@ fn main() -> ! {
                 {
                     if encoder_p2_count != value as i32 {
                         encoder_p2_last_update_ticks = timer.get_counter().ticks();
-                        info!("Encoder P2 Position: {}", value as i32);
                         encoder_p2_count = value as i32;
                         last_button_update_ticks = timer.get_counter().ticks();
                     }
@@ -922,7 +915,7 @@ impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
 
     fn update_display(&mut self) {
         self.menu_handler.frames_rendered += 1;
-        self.menu_handler.print_debug_display(
+        self.menu_handler.render_menu(
             self.current_button_state,
             self.encoder_p1_count,
             self.encoder_p2_count,
@@ -946,16 +939,24 @@ impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
     }
 }
 
+/// Determines which menu/render mode the device is currently in.
+#[derive(Clone, Copy, PartialEq)]
+enum MenuMode {
+    Debug,
+    PixelTest,
+}
+
 pub struct MenuHandler<'a, D> {
-    pub display: &'a mut Ssd1306<D, DisplaySize128x64, BufferedGraphicsMode<DisplaySize128x64>>,
+    pub display: &'a mut OledDisplay<D>,
     line_bufs: &'a mut [FmtBuf; 4],
     text_style: MonoTextStyle<'a, BinaryColor>,
     pub frames_rendered: u64,
+    menu_mode: MenuMode,
 }
 
 impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
     fn new(
-        display: &'a mut Ssd1306<D, DisplaySize128x64, BufferedGraphicsMode<DisplaySize128x64>>,
+        display: &'a mut OledDisplay<D>,
         line_bufs: &'a mut [FmtBuf; 4],
         text_style: MonoTextStyle<'a, BinaryColor>,
         frames_rendered: u64,
@@ -965,6 +966,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             line_bufs,
             text_style,
             frames_rendered,
+            menu_mode: MenuMode::Debug,
         }
     }
 
@@ -972,13 +974,32 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
         match event {
             MenuEvents::Press(button) => {
                 debug!("MENU PRESS! {}", button as usize);
-                Rectangle::new(Point::new(0, 0), Size::new(127, 63))
-                    .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-                    .draw(self.display)
-                    .unwrap();
+                match button {
+                    ButtonOffsets::CcUp => self.menu_mode = MenuMode::PixelTest,
+                    ButtonOffsets::CcSelect => self.menu_mode = MenuMode::Debug,
+                    ButtonOffsets::CcDown => self.menu_mode = MenuMode::Debug,
+                    ButtonOffsets::CcLeft => self.menu_mode = MenuMode::Debug,
+                    ButtonOffsets::CcRight => self.menu_mode = MenuMode::Debug,
+                    _ => {}
+                }
             }
         }
-        self.display.flush().unwrap();
+    }
+
+    /// Entry point for rendering the display. Sets the mode to Debug by default
+    /// and dispatches to the appropriate rendering function based on `menu_mode`.
+    fn render_menu(
+        &mut self,
+        current_button_state: u32,
+        encoder_p1_count: i32,
+        encoder_p2_count: i32,
+    ) {
+        match self.menu_mode {
+            MenuMode::Debug => {
+                self.print_debug_display(current_button_state, encoder_p1_count, encoder_p2_count)
+            }
+            MenuMode::PixelTest => self.print_pixel_test(),
+        }
     }
 
     /// Prints the full debug display to the OLED: resets and writes the text lines,
@@ -1059,6 +1080,16 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                     .unwrap();
             }
         }
+    }
+
+    /// Draws a solid rectangle covering the full display and flushes it.
+    fn print_pixel_test(&mut self) {
+        Rectangle::new(Point::new(0, 0), Size::new(127, 63))
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+            .draw(self.display)
+            .unwrap();
+
+        self.display.flush().unwrap();
     }
 }
 
