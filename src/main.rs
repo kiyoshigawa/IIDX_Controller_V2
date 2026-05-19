@@ -41,6 +41,7 @@ use rp235x_hal::{
     timer::{CopyableTimer0, Timer},
 };
 use ssd1306::{Ssd1306, mode::BufferedGraphicsMode, prelude::*};
+use strum::{EnumIter, IntoEnumIterator};
 use usb_device::{bus::*, class_prelude::*, prelude::*};
 use usbd_human_interface_device::{page::Keyboard, prelude::*};
 
@@ -81,7 +82,7 @@ const CURRENT_BUTTON_STATE_HEADER: u32 = 0b10100;
 
 /// A binary header to take the highest 5 bits of the whatever I need next
 /// being sent from core0 to core1
-const RESERVED_STATE_HEADER: u32 = 0b10101;
+// const RESERVED_STATE_HEADER: u32 = 0b10101;
 
 /// A binary header to take the highest 5 bits of the encoder 1 count value
 /// being sent from core0 to core1
@@ -161,25 +162,6 @@ const BUTTON_DEBUG_RECTANGLES: [Rectangle; NUM_BUTTONS] = [
     Rectangle::new(Point::new( 58, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  1), Size::new(3, 3)),
     Rectangle::new(Point::new( 66, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  1), Size::new(3, 3)),
     Rectangle::new(Point::new( 74, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  1), Size::new(3, 3)),
-];
-
-/// This enum is offsets into the bits or buttons array to each of the 5 CC buttons
-/// used to control menus in the control center.
-#[repr(usize)]
-enum CcButtonOffsets {
-    CcUpOffset = 19,
-    CcDownOffset = 20,
-    CcLeftOffset = 21,
-    CcRightOffset = 22,
-    CcSelectOffset = 23,
-}
-
-const CC_BUTTON_OFFSETS: [CcButtonOffsets; 5] = [
-    CcButtonOffsets::CcUpOffset,
-    CcButtonOffsets::CcDownOffset,
-    CcButtonOffsets::CcLeftOffset,
-    CcButtonOffsets::CcRightOffset,
-    CcButtonOffsets::CcSelectOffset,
 ];
 
 /// Tell the Boot ROM about our application:
@@ -831,22 +813,19 @@ fn sign_extend_27bit(value: u32) -> i32 {
 
 /// This will check to see if a CC button has changed state and send any button events needed.
 pub fn detect_input_changes(states: &InputState, menu_state: &mut MenuState) {
-    for offset in CC_BUTTON_OFFSETS {
-        let offset = offset as u32;
-        let current_button_state = (states.current_button_state >> offset as usize) & 1 == 1;
-        let previous_button_state = (states.previous_button_state >> offset as usize) & 1 == 1;
+    for button in ButtonOffsets::iter() {
+        let offset = button as usize;
+        let current_button_state = (states.current_button_state >> offset) & 1 == 1;
+        let previous_button_state = (states.previous_button_state >> offset) & 1 == 1;
         if current_button_state == true && previous_button_state == false {
             //button was pressed, send appropriate event:
             debug!(
                 "CBS: {} PBS: {}",
                 states.current_button_state, states.previous_button_state
             );
-            match offset {
-                0 => {
-                    menu_state.process_event(ButtonEvents::Press);
-                }
-                _ => {}
-            }
+            menu_state.process_event(ButtonEvents::Press(button));
+        } else if current_button_state == false && previous_button_state == true {
+            menu_state.process_event(ButtonEvents::Release(button));
         }
     }
 }
@@ -1008,33 +987,60 @@ impl InputState {
     }
 }
 
+/// Enum variants for every button in the `buttons` array, with index values matching
+/// their position in the array.
+#[repr(usize)]
+#[derive(Clone, Copy, EnumIter)]
+enum ButtonOffsets {
+    P1_1 = 0,
+    P1_2 = 1,
+    P1_3 = 2,
+    P1_4 = 3,
+    P1_5 = 4,
+    P1_6 = 5,
+    P1_7 = 6,
+    P1Start = 7,
+    P1Select = 8,
+    P2_1 = 9,
+    P2_2 = 10,
+    P2_3 = 11,
+    P2_4 = 12,
+    P2_5 = 13,
+    P2_6 = 14,
+    P2_7 = 15,
+    P2Start = 16,
+    P2Select = 17,
+    Escape = 18,
+    CcUp = 19,
+    CcDown = 20,
+    CcLeft = 21,
+    CcRight = 22,
+    CcSelect = 23,
+    VolumeUp = 24,
+    VolumeDown = 25,
+    Mute = 26,
+}
+
 enum ButtonStates {
     Idle,
-    Pressed,
-    Released,
-    Held,
 }
 
 enum ButtonEvents {
-    Press,
-    Release,
+    Press(ButtonOffsets),
+    Release(ButtonOffsets),
 }
 
-pub struct MenuState {
-    pub cc_up_state: ButtonStates,
-}
+pub struct MenuState {}
 
 impl MenuState {
     pub fn new() -> Self {
-        Self {
-            cc_up_state: ButtonStates::Idle,
-        }
+        Self {}
     }
 
     fn process_event(&mut self, event: ButtonEvents) {
         match event {
-            ButtonEvents::Press => debug!("PRESS!"),
-            ButtonEvents::Release => todo!(),
+            ButtonEvents::Press(button) => debug!("PRESS!    {}", button as usize),
+            ButtonEvents::Release(button) => debug!("RELEASE! {}", button as usize),
         };
     }
 }
