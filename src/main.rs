@@ -17,7 +17,7 @@
 #![no_main]
 
 use core::fmt::Write;
-use defmt::info;
+use defmt::{debug, info};
 use defmt_rtt as _;
 use embedded_graphics::{
     image::{Image, ImageRaw},
@@ -30,7 +30,6 @@ use embedded_graphics::{
 use embedded_hal::digital::*;
 use fugit::RateExtU32;
 use panic_probe as _;
-use rp235x_hal::timer::{CopyableTimer0, Timer};
 use rp235x_hal::{
     self as hal, Clock, I2C,
     clocks::init_clocks_and_plls,
@@ -39,6 +38,7 @@ use rp235x_hal::{
     multicore::{Multicore, Stack},
     pac,
     pio::{Buffers, PIOExt},
+    timer::{CopyableTimer0, Timer},
 };
 use ssd1306::{Ssd1306, mode::BufferedGraphicsMode, prelude::*};
 use usb_device::{bus::*, class_prelude::*, prelude::*};
@@ -79,9 +79,9 @@ const LED_FRAME_TICKS: u64 = 6_944; //144Hz
 /// being sent from core0 to core1
 const CURRENT_BUTTON_STATE_HEADER: u32 = 0b10100;
 
-/// A binary header to take the highest 5 bits of the previous button state
+/// A binary header to take the highest 5 bits of the whatever I need next
 /// being sent from core0 to core1
-const PREVIOUS_BUTTON_STATE_HEADER: u32 = 0b10101;
+const RESERVED_STATE_HEADER: u32 = 0b10101;
 
 /// A binary header to take the highest 5 bits of the encoder 1 count value
 /// being sent from core0 to core1
@@ -161,6 +161,25 @@ const BUTTON_DEBUG_RECTANGLES: [Rectangle; NUM_BUTTONS] = [
     Rectangle::new(Point::new( 58, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  1), Size::new(3, 3)),
     Rectangle::new(Point::new( 66, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  1), Size::new(3, 3)),
     Rectangle::new(Point::new( 74, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  1), Size::new(3, 3)),
+];
+
+/// This enum is offsets into the bits or buttons array to each of the 5 CC buttons
+/// used to control menus in the control center.
+#[repr(usize)]
+enum CcButtonOffsets {
+    CcUpOffset = 19,
+    CcDownOffset = 20,
+    CcLeftOffset = 21,
+    CcRightOffset = 22,
+    CcSelectOffset = 23,
+}
+
+const CC_BUTTON_OFFSETS: [CcButtonOffsets; 5] = [
+    CcButtonOffsets::CcUpOffset,
+    CcButtonOffsets::CcDownOffset,
+    CcButtonOffsets::CcLeftOffset,
+    CcButtonOffsets::CcRightOffset,
+    CcButtonOffsets::CcSelectOffset,
 ];
 
 /// Tell the Boot ROM about our application:
@@ -535,12 +554,14 @@ fn main() -> ! {
             // Use this for things you want on the memory reserved for the core1 stack, not in main memory
             // don't use this area for shared peripherals, they should be set up outside this function
 
+            let mut menu_state = MenuState::new();
+
             // core1 loop state variables:
             let mut last_core1_heartbeat_tick = 0_u64; // last time core 1 toggled its LED
             let core1_heartbeat_rate = 1_000_000_u64 / 3; // 3Hz in timer ticks
             let mut last_screen_update_ticks = 0_u64;
             let mut frames_rendered = 0_u64; // variable for counting number of screen refreshes since reboot
-            let mut status = InputState::new();
+            let mut states = InputState::new();
             let mut last_led_update_ticks = 0_u64;
             // let test_color = RGB8 {
             //     r: 0,
@@ -552,24 +573,24 @@ fn main() -> ! {
             // core1 loop:
             loop {
                 //get core0 variable info:
-                let fifo_is_empty = (sio.fifo.status() & 0b1) == 0; // Bit 0 VLD: Value is 1 if this core’s RX FIFO is not empty (i.e. if FIFO_RD is valid) - RP235x datasheet pg. 67
-                if !fifo_is_empty {
-                    for _ in 0..4 {
-                        let packed = sio.fifo.read_blocking();
-                        let (header, word) = extract_header_from_word(packed);
-                        match header {
-                            CURRENT_BUTTON_STATE_HEADER => status.current_button_state = word,
-                            PREVIOUS_BUTTON_STATE_HEADER => status.previous_button_state = word,
-                            ENCODER_P1_COUNT_HEADER => {
-                                status.encoder_p1_count = sign_extend_27bit(word)
-                            }
-                            ENCODER_P2_COUNT_HEADER => {
-                                status.encoder_p2_count = sign_extend_27bit(word)
-                            }
-                            _ => {} // unknown header, ignore
+                while (sio.fifo.status() & 0b1) != 0 {
+                    // Bit 0 VLD: Value is 1 if this core’s RX FIFO is not empty (i.e. if FIFO_RD is valid) - RP235x datasheet pg. 67
+                    let packed = sio.fifo.read_blocking();
+                    let (header, word) = extract_header_from_word(packed);
+                    match header {
+                        CURRENT_BUTTON_STATE_HEADER => states.current_button_state = word,
+                        ENCODER_P1_COUNT_HEADER => {
+                            states.encoder_p1_count = sign_extend_27bit(word)
                         }
+                        ENCODER_P2_COUNT_HEADER => {
+                            states.encoder_p2_count = sign_extend_27bit(word)
+                        }
+                        // RESERVED_STATE_HEADER => {},
+                        _ => {} // unknown header, ignore
                     }
                 }
+
+                detect_input_changes(&states, &mut menu_state);
 
                 // core1 heartbeat blink:
                 if timer.get_counter().ticks() > (last_core1_heartbeat_tick + core1_heartbeat_rate)
@@ -592,12 +613,14 @@ fn main() -> ! {
 
                     print_debug_display(
                         &mut display,
-                        &status,
+                        &states,
                         &mut line_bufs,
                         text_style,
                         frames_rendered,
                     );
                 }
+
+                states.previous_button_state = states.current_button_state;
             }
         })
         .unwrap();
@@ -621,7 +644,7 @@ fn main() -> ! {
             last_core0_heartbeat_tick = timer.get_counter().ticks();
         }
 
-        // put the current state of all the buttons (debounced) into the button array:
+        // put the current state of all the buttons (debounced) into the buttons array:
         update_buttons(&mut buttons, &timer);
 
         // prep button states for use on core1:
@@ -673,16 +696,16 @@ fn main() -> ! {
         if fifo_is_empty {
             let packed_current_button_state =
                 add_header_to_word(CURRENT_BUTTON_STATE_HEADER, current_button_state);
-            let packed_previous_button_state =
-                add_header_to_word(PREVIOUS_BUTTON_STATE_HEADER, previous_button_state);
             let packed_encoder_p1_count =
                 add_header_to_word(ENCODER_P1_COUNT_HEADER, encoder_p1_count as u32);
             let packed_encoder_p2_count =
                 add_header_to_word(ENCODER_P2_COUNT_HEADER, encoder_p2_count as u32);
+            // let reserved_state =
+            //     add_header_to_word(RESERVED_STATE_HEADER, previous_button_state);
             sio.fifo.write(packed_current_button_state);
-            sio.fifo.write(packed_previous_button_state);
             sio.fifo.write(packed_encoder_p1_count);
             sio.fifo.write(packed_encoder_p2_count);
+            // sio.fifo.write(reserved_state);
         }
 
         // Sends a USB tick at the 1ms interval specified by USB spec
@@ -803,6 +826,28 @@ fn sign_extend_27bit(value: u32) -> i32 {
         (value | 0xF800_0000) as i32
     } else {
         value as i32
+    }
+}
+
+/// This will check to see if a CC button has changed state and send any button events needed.
+pub fn detect_input_changes(states: &InputState, menu_state: &mut MenuState) {
+    for offset in CC_BUTTON_OFFSETS {
+        let offset = offset as u32;
+        let current_button_state = (states.current_button_state >> offset as usize) & 1 == 1;
+        let previous_button_state = (states.previous_button_state >> offset as usize) & 1 == 1;
+        if current_button_state == true && previous_button_state == false {
+            //button was pressed, send appropriate event:
+            debug!(
+                "CBS: {} PBS: {}",
+                states.current_button_state, states.previous_button_state
+            );
+            match offset {
+                0 => {
+                    menu_state.process_event(ButtonEvents::Press);
+                }
+                _ => {}
+            }
+        }
     }
 }
 
@@ -960,6 +1005,43 @@ impl InputState {
             encoder_p1_count: 0_i32,
             encoder_p2_count: 0_i32,
         }
+    }
+}
+
+enum ButtonStates {
+    Idle,
+    Pressed,
+    Released,
+    Held,
+}
+
+enum ButtonEvents {
+    Press,
+    Release,
+}
+
+pub struct MenuState {
+    pub cc_up_state: ButtonStates,
+}
+
+impl MenuState {
+    pub fn new() -> Self {
+        Self {
+            cc_up_state: ButtonStates::Idle,
+        }
+    }
+
+    fn process_event(&mut self, event: ButtonEvents) {
+        match event {
+            ButtonEvents::Press => debug!("PRESS!"),
+            ButtonEvents::Release => todo!(),
+        };
+    }
+}
+
+impl Default for MenuState {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
