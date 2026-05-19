@@ -536,7 +536,8 @@ fn main() -> ! {
             // Use this for things you want on the memory reserved for the core1 stack, not in main memory
             // don't use this area for shared peripherals, they should be set up outside this function
 
-            let mut menu_state = MenuState::new();
+            let menu_handler = MenuHandler::new();
+            let mut input_handler = InputHandler::new(menu_handler);
 
             // core1 loop state variables:
             let mut last_core1_heartbeat_tick = 0_u64; // last time core 1 toggled its LED
@@ -572,7 +573,7 @@ fn main() -> ! {
                     }
                 }
 
-                detect_input_changes(&states, &mut menu_state);
+                detect_input_changes(&states, &mut input_handler);
 
                 // core1 heartbeat blink:
                 if timer.get_counter().ticks() > (last_core1_heartbeat_tick + core1_heartbeat_rate)
@@ -812,17 +813,12 @@ fn sign_extend_27bit(value: u32) -> i32 {
 }
 
 /// This will check to see if a CC button has changed state and send any button events needed.
-pub fn detect_input_changes(states: &InputState, menu_state: &mut MenuState) {
+pub fn detect_input_changes(states: &InputState, menu_state: &mut InputHandler) {
     for button in ButtonOffsets::iter() {
         let offset = button as usize;
         let current_button_state = (states.current_button_state >> offset) & 1 == 1;
         let previous_button_state = (states.previous_button_state >> offset) & 1 == 1;
         if current_button_state == true && previous_button_state == false {
-            //button was pressed, send appropriate event:
-            debug!(
-                "CBS: {} PBS: {}",
-                states.current_button_state, states.previous_button_state
-            );
             menu_state.process_event(ButtonEvents::Press(button));
         } else if current_button_state == false && previous_button_state == true {
             menu_state.process_event(ButtonEvents::Release(button));
@@ -924,6 +920,49 @@ fn print_debug_display<'a, D>(
     display.flush().unwrap();
 }
 
+/// Enum variants for every button in the `buttons` array, with index values matching
+/// their position in the array.
+#[repr(usize)]
+#[derive(Clone, Copy, EnumIter)]
+enum ButtonOffsets {
+    P1_1 = 0,
+    P1_2 = 1,
+    P1_3 = 2,
+    P1_4 = 3,
+    P1_5 = 4,
+    P1_6 = 5,
+    P1_7 = 6,
+    P1Start = 7,
+    P1Select = 8,
+    P2_1 = 9,
+    P2_2 = 10,
+    P2_3 = 11,
+    P2_4 = 12,
+    P2_5 = 13,
+    P2_6 = 14,
+    P2_7 = 15,
+    P2Start = 16,
+    P2Select = 17,
+    Escape = 18,
+    CcUp = 19,
+    CcDown = 20,
+    CcLeft = 21,
+    CcRight = 22,
+    CcSelect = 23,
+    VolumeUp = 24,
+    VolumeDown = 25,
+    Mute = 26,
+}
+
+enum ButtonEvents {
+    Press(ButtonOffsets),
+    Release(ButtonOffsets),
+}
+
+enum MenuEvents {
+    Press(ButtonOffsets),
+}
+
 // struct for storing all the button info to make iterative upating and configuring easier:
 pub struct ButtonState {
     pub name: &'static str,
@@ -987,67 +1026,36 @@ impl InputState {
     }
 }
 
-/// Enum variants for every button in the `buttons` array, with index values matching
-/// their position in the array.
-#[repr(usize)]
-#[derive(Clone, Copy, EnumIter)]
-enum ButtonOffsets {
-    P1_1 = 0,
-    P1_2 = 1,
-    P1_3 = 2,
-    P1_4 = 3,
-    P1_5 = 4,
-    P1_6 = 5,
-    P1_7 = 6,
-    P1Start = 7,
-    P1Select = 8,
-    P2_1 = 9,
-    P2_2 = 10,
-    P2_3 = 11,
-    P2_4 = 12,
-    P2_5 = 13,
-    P2_6 = 14,
-    P2_7 = 15,
-    P2Start = 16,
-    P2Select = 17,
-    Escape = 18,
-    CcUp = 19,
-    CcDown = 20,
-    CcLeft = 21,
-    CcRight = 22,
-    CcSelect = 23,
-    VolumeUp = 24,
-    VolumeDown = 25,
-    Mute = 26,
+pub struct InputHandler {
+    pub menu_handler: MenuHandler,
 }
 
-enum ButtonStates {
-    Idle,
-}
-
-enum ButtonEvents {
-    Press(ButtonOffsets),
-    Release(ButtonOffsets),
-}
-
-pub struct MenuState {}
-
-impl MenuState {
-    pub fn new() -> Self {
-        Self {}
+impl InputHandler {
+    fn new(menu_handler: MenuHandler) -> Self {
+        Self { menu_handler }
     }
 
     fn process_event(&mut self, event: ButtonEvents) {
         match event {
-            ButtonEvents::Press(button) => debug!("PRESS!    {}", button as usize),
+            ButtonEvents::Press(button) => {
+                self.menu_handler.process_event(MenuEvents::Press(button));
+            }
             ButtonEvents::Release(button) => debug!("RELEASE! {}", button as usize),
         };
     }
 }
 
-impl Default for MenuState {
-    fn default() -> Self {
-        Self::new()
+pub struct MenuHandler {}
+
+impl MenuHandler {
+    fn new() -> Self {
+        Self {}
+    }
+
+    fn process_event(&mut self, event: MenuEvents) {
+        match event {
+            MenuEvents::Press(button) => debug!("MENU PRESS! {}", button as usize),
+        }
     }
 }
 
