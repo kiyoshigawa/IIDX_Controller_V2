@@ -536,15 +536,15 @@ fn main() -> ! {
             // Use this for things you want on the memory reserved for the core1 stack, not in main memory
             // don't use this area for shared peripherals, they should be set up outside this function
 
-            let menu_handler = MenuHandler::new();
-            let mut input_handler = InputHandler::new(menu_handler, &mut display);
+            // These will handle processing input changes and triggering events based on what the button states are.
+            let menu_handler = MenuHandler::new(&mut display, &mut line_bufs, text_style, 0_u64);
+            let mut input_handler = InputHandler::new(menu_handler);
 
             // core1 loop state variables:
             let mut last_core1_heartbeat_tick = 0_u64; // last time core 1 toggled its LED
             let core1_heartbeat_rate = 1_000_000_u64 / 3; // 3Hz in timer ticks
             let mut last_screen_update_ticks = 0_u64;
-            let mut frames_rendered = 0_u64; // variable for counting number of screen refreshes since reboot
-            let mut states = InputState::new();
+
             let mut last_led_update_ticks = 0_u64;
             // let test_color = RGB8 {
             //     r: 0,
@@ -561,19 +561,20 @@ fn main() -> ! {
                     let packed = sio.fifo.read_blocking();
                     let (header, word) = extract_header_from_word(packed);
                     match header {
-                        CURRENT_BUTTON_STATE_HEADER => states.current_button_state = word,
+                        CURRENT_BUTTON_STATE_HEADER => input_handler.current_button_state = word,
                         ENCODER_P1_COUNT_HEADER => {
-                            states.encoder_p1_count = sign_extend_27bit(word)
+                            input_handler.encoder_p1_count = sign_extend_27bit(word)
                         }
                         ENCODER_P2_COUNT_HEADER => {
-                            states.encoder_p2_count = sign_extend_27bit(word)
+                            input_handler.encoder_p2_count = sign_extend_27bit(word)
                         }
                         // RESERVED_STATE_HEADER => {},
                         _ => {} // unknown header, ignore
                     }
                 }
 
-                detect_input_changes(&states, &mut input_handler);
+                // Update inputs first so that events can fire based on changes.
+                input_handler.detect_input_changes();
 
                 // core1 heartbeat blink:
                 if timer.get_counter().ticks() > (last_core1_heartbeat_tick + core1_heartbeat_rate)
@@ -592,18 +593,12 @@ fn main() -> ! {
                 if timer.get_counter().ticks() > (last_screen_update_ticks + SCREEN_REFRESH_TICKS) {
                     last_screen_update_ticks = timer.get_counter().ticks();
 
-                    frames_rendered += 1;
-
-                    print_debug_display(
-                        &mut input_handler.display,
-                        &states,
-                        &mut line_bufs,
-                        text_style,
-                        frames_rendered,
-                    );
+                    input_handler.update_display();
                 }
 
-                states.previous_button_state = states.current_button_state;
+                // We update this last so everything that needs to react to an input change in the
+                // handlers above can do so before we reset them.
+                input_handler.previous_button_state = input_handler.current_button_state;
             }
         })
         .unwrap();
@@ -812,117 +807,6 @@ fn sign_extend_27bit(value: u32) -> i32 {
     }
 }
 
-/// This will check to see if a CC button has changed state and send any button events needed.
-pub fn detect_input_changes<'a, D: WriteOnlyDataCommand>(
-    states: &InputState,
-    menu_state: &mut InputHandler<'a, D>,
-) {
-    for button in ButtonOffsets::iter() {
-        let offset = button as usize;
-        let current_button_state = (states.current_button_state >> offset) & 1 == 1;
-        let previous_button_state = (states.previous_button_state >> offset) & 1 == 1;
-        if current_button_state == true && previous_button_state == false {
-            menu_state.process_event(ButtonEvents::Press(button));
-        } else if current_button_state == false && previous_button_state == true {
-            menu_state.process_event(ButtonEvents::Release(button));
-        }
-    }
-}
-
-pub fn draw_empty_button_graphic<D>(
-    display: &mut Ssd1306<D, DisplaySize128x64, BufferedGraphicsMode<DisplaySize128x64>>,
-    y_start: u8,
-    raw_image: &[u8],
-) where
-    D: WriteOnlyDataCommand,
-{
-    let raw = ImageRaw::<BinaryColor>::new(raw_image, 128);
-    let image = Image::new(&raw, Point::new(0, y_start as i32));
-    image.draw(display).unwrap();
-}
-
-/// Draws filled rectangles for each pressed button based on the 27-bit encoded button state.
-/// Bits 0-26 of `state` correspond to the 27 rectangles in `BUTTON_DEBUG_RECTANGLES`.
-/// Only rectangles for pressed buttons (bit = 1) are drawn into the buffer.
-pub fn draw_pressed_buttons<D>(
-    display: &mut Ssd1306<D, DisplaySize128x64, BufferedGraphicsMode<DisplaySize128x64>>,
-    state: u32,
-) where
-    D: WriteOnlyDataCommand,
-{
-    for (i, rect) in BUTTON_DEBUG_RECTANGLES.iter().enumerate() {
-        if (state >> i) & 1 == 1 {
-            rect.into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-                .draw(display)
-                .unwrap();
-        }
-    }
-}
-
-/// Prints the full debug display to the OLED: resets and writes the text lines,
-/// clears the display, draws the frame counter, encoder counts, the button layout
-/// graphic, and pressed-button indicator dots.
-fn print_debug_display<'a, D>(
-    display: &mut Ssd1306<D, DisplaySize128x64, BufferedGraphicsMode<DisplaySize128x64>>,
-    states: &InputState,
-    line_bufs: &'a mut [FmtBuf; 4],
-    text_style: MonoTextStyle<'a, BinaryColor>,
-    frames_rendered: u64,
-) where
-    D: WriteOnlyDataCommand,
-{
-    // Update the lines to be written:
-    for line in line_bufs.iter_mut() {
-        line.reset();
-    }
-    write!(line_bufs[0], "fc: {}", frames_rendered).unwrap();
-    write!(line_bufs[1], "{}", states.encoder_p1_count).unwrap();
-    write!(line_bufs[2], "{}", states.encoder_p2_count).unwrap();
-    write!(line_bufs[3], "Not used").unwrap();
-
-    // Empty the display:
-    let color = embedded_graphics::pixelcolor::BinaryColor::Off;
-    display.clear(color).unwrap();
-
-    // Framecount.
-    Text::with_baseline(
-        line_bufs[0].as_str(),
-        Point::new(0, 0),
-        text_style,
-        Baseline::Top,
-    )
-    .draw(display)
-    .unwrap();
-
-    // Encoder 1:
-    Text::with_alignment(
-        line_bufs[1].as_str(),
-        Point::new(0, 32),
-        text_style,
-        Alignment::Left,
-    )
-    .draw(display)
-    .unwrap();
-
-    // Encoder 2:
-    Text::with_alignment(
-        line_bufs[2].as_str(),
-        Point::new(127, 32),
-        text_style,
-        Alignment::Right,
-    )
-    .draw(display)
-    .unwrap();
-
-    // Draw button graphic with open keys to be filled if pressed later
-    draw_empty_button_graphic(display, BUTTON_GRAPHIC_ROW_HEIGHT, &BUTTON_GRAPHIC);
-
-    // Draw indicator dots for pressed buttons based on current button state:
-    draw_pressed_buttons(display, states.current_button_state);
-
-    display.flush().unwrap();
-}
-
 /// Enum variants for every button in the `buttons` array, with index values matching
 /// their position in the array.
 #[repr(usize)]
@@ -1008,78 +892,173 @@ impl ButtonState {
     }
 }
 
-/// struct for storing the current state of the inputs received from core0, to make
-/// passing them from the core1 FIFO read area to the rest of the core1 loop easier:
-pub struct InputState {
+pub struct InputHandler<'a, D> {
+    pub menu_handler: MenuHandler<'a, D>,
     pub current_button_state: u32,
     pub previous_button_state: u32,
     pub encoder_p1_count: i32,
     pub encoder_p2_count: i32,
 }
 
-impl InputState {
-    /// Creates a new InputState struct with default values of 0 for all fields.
-    fn new() -> Self {
+impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
+    fn new(menu_handler: MenuHandler<'a, D>) -> Self {
         Self {
+            menu_handler,
             current_button_state: 0_u32,
             previous_button_state: 0_u32,
             encoder_p1_count: 0_i32,
             encoder_p2_count: 0_i32,
         }
     }
-}
-
-pub struct InputHandler<'a, D> {
-    pub menu_handler: MenuHandler,
-    pub display: &'a mut Ssd1306<D, DisplaySize128x64, BufferedGraphicsMode<DisplaySize128x64>>,
-}
-
-impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
-    fn new(
-        menu_handler: MenuHandler,
-        display: &'a mut Ssd1306<D, DisplaySize128x64, BufferedGraphicsMode<DisplaySize128x64>>,
-    ) -> Self {
-        Self {
-            menu_handler,
-            display,
-        }
-    }
 
     fn process_event(&mut self, event: ButtonEvents) {
         match event {
             ButtonEvents::Press(button) => {
-                self.menu_handler
-                    .process_event(MenuEvents::Press(button), &mut self.display);
+                self.menu_handler.process_event(MenuEvents::Press(button));
             }
             ButtonEvents::Release(button) => debug!("RELEASE! {}", button as usize),
         };
     }
-}
 
-pub struct MenuHandler {}
-
-impl MenuHandler {
-    fn new() -> Self {
-        Self {}
+    fn update_display(&mut self) {
+        self.menu_handler.frames_rendered += 1;
+        self.menu_handler.print_debug_display(
+            self.current_button_state,
+            self.encoder_p1_count,
+            self.encoder_p2_count,
+        );
     }
 
-    fn process_event<'a, D>(
-        &mut self,
-        event: MenuEvents,
+    /// This will check to see if a CC button has changed state and send any button events needed.
+    fn detect_input_changes(&mut self) {
+        let current_state = self.current_button_state;
+        let previous_state = self.previous_button_state;
+        for button in ButtonOffsets::iter() {
+            let offset = button as usize;
+            let current_pressed = (current_state >> offset) & 1 == 1;
+            let previous_pressed = (previous_state >> offset) & 1 == 1;
+            if current_pressed && !previous_pressed {
+                self.process_event(ButtonEvents::Press(button));
+            } else if !current_pressed && previous_pressed {
+                self.process_event(ButtonEvents::Release(button));
+            }
+        }
+    }
+}
+
+pub struct MenuHandler<'a, D> {
+    pub display: &'a mut Ssd1306<D, DisplaySize128x64, BufferedGraphicsMode<DisplaySize128x64>>,
+    line_bufs: &'a mut [FmtBuf; 4],
+    text_style: MonoTextStyle<'a, BinaryColor>,
+    pub frames_rendered: u64,
+}
+
+impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
+    fn new(
         display: &'a mut Ssd1306<D, DisplaySize128x64, BufferedGraphicsMode<DisplaySize128x64>>,
-    ) where
-        D: WriteOnlyDataCommand,
-    {
+        line_bufs: &'a mut [FmtBuf; 4],
+        text_style: MonoTextStyle<'a, BinaryColor>,
+        frames_rendered: u64,
+    ) -> Self {
+        Self {
+            display,
+            line_bufs,
+            text_style,
+            frames_rendered,
+        }
+    }
+
+    fn process_event(&mut self, event: MenuEvents) {
         match event {
             MenuEvents::Press(button) => {
                 debug!("MENU PRESS! {}", button as usize);
                 Rectangle::new(Point::new(0, 0), Size::new(127, 63))
                     .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-                    .draw(display)
+                    .draw(self.display)
                     .unwrap();
             }
         }
-        display.flush().unwrap();
+        self.display.flush().unwrap();
+    }
+
+    /// Prints the full debug display to the OLED: resets and writes the text lines,
+    /// clears the display, draws the frame counter, encoder counts, the button layout
+    /// graphic, and pressed-button indicator dots.
+    fn print_debug_display(
+        &mut self,
+        current_button_state: u32,
+        encoder_p1_count: i32,
+        encoder_p2_count: i32,
+    ) {
+        // Update the lines to be written:
+        for line in self.line_bufs.iter_mut() {
+            line.reset();
+        }
+        write!(self.line_bufs[0], "fc: {}", self.frames_rendered).unwrap();
+        write!(self.line_bufs[1], "{}", encoder_p1_count).unwrap();
+        write!(self.line_bufs[2], "{}", encoder_p2_count).unwrap();
+        write!(self.line_bufs[3], "Not used").unwrap();
+
+        // Empty the display:
+        let color = embedded_graphics::pixelcolor::BinaryColor::Off;
+        self.display.clear(color).unwrap();
+
+        // Framecount.
+        Text::with_baseline(
+            self.line_bufs[0].as_str(),
+            Point::new(0, 0),
+            self.text_style,
+            Baseline::Top,
+        )
+        .draw(self.display)
+        .unwrap();
+
+        // Encoder 1:
+        Text::with_alignment(
+            self.line_bufs[1].as_str(),
+            Point::new(0, 32),
+            self.text_style,
+            Alignment::Left,
+        )
+        .draw(self.display)
+        .unwrap();
+
+        // Encoder 2:
+        Text::with_alignment(
+            self.line_bufs[2].as_str(),
+            Point::new(127, 32),
+            self.text_style,
+            Alignment::Right,
+        )
+        .draw(self.display)
+        .unwrap();
+
+        // Draw button graphic with open keys to be filled if pressed later
+        self.draw_empty_button_graphic(BUTTON_GRAPHIC_ROW_HEIGHT, &BUTTON_GRAPHIC);
+
+        // Draw indicator dots for pressed buttons based on current button state:
+        self.draw_pressed_buttons(current_button_state);
+
+        self.display.flush().unwrap();
+    }
+
+    fn draw_empty_button_graphic(&mut self, y_start: u8, raw_image: &[u8]) {
+        let raw = ImageRaw::<BinaryColor>::new(raw_image, 128);
+        let image = Image::new(&raw, Point::new(0, y_start as i32));
+        image.draw(self.display).unwrap();
+    }
+
+    /// Draws filled rectangles for each pressed button based on the 27-bit encoded button state.
+    /// Bits 0-26 of `state` correspond to the 27 rectangles in `BUTTON_DEBUG_RECTANGLES`.
+    /// Only rectangles for pressed buttons (bit = 1) are drawn into the buffer.
+    fn draw_pressed_buttons(&mut self, state: u32) {
+        for (i, rect) in BUTTON_DEBUG_RECTANGLES.iter().enumerate() {
+            if (state >> i) & 1 == 1 {
+                rect.into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                    .draw(self.display)
+                    .unwrap();
+            }
+        }
     }
 }
 
