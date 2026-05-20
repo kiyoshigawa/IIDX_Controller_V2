@@ -34,7 +34,7 @@ use ssd1306::{I2CDisplayInterface, Ssd1306, prelude::*};
 use usb_device::{bus::*, class_prelude::*, prelude::*};
 use usbd_human_interface_device::{page::Keyboard, prelude::*};
 
-// Library crate imports — single source of truth for shared types & constants.
+// Library crate imports from this repo
 use iidx_controller_v2::input_handler::InputHandler;
 use iidx_controller_v2::menu_handler::MenuHandler;
 use iidx_controller_v2::*;
@@ -79,10 +79,9 @@ fn main() -> ! {
     .ok()
     .unwrap();
 
-    // Shared timer for times tasks, counts at 1_000_000 ticks per second
+    // Shared timer for timed tasks, counts at 1_000_000 ticks per second (or 1 tick per us if you prefer)
     let timer = hal::Timer::new_timer0(pac.TIMER0, &mut pac.RESETS, &clocks);
 
-    //USB bus peripheral initialization. used by NKRO library
     let usb_bus = UsbBusAllocator::new(hal::usb::UsbBus::new(
         pac.USB,
         pac.USB_DPRAM,
@@ -98,7 +97,7 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
 
-    // Pin Setup/state array for all NKRO key pins and control center buttons:
+    // Pin Setup/state array for all physical buttons connected to GPIO pins:
     let mut buttons: [ButtonState; NUM_BUTTONS] = [
         ButtonState::new(
             "P1_1",
@@ -265,7 +264,8 @@ fn main() -> ! {
     let mut heartbeat_led_pin_core1 = pins.gpio38.into_push_pull_output();
     let mut heartbeat_led_pin_core0 = pins.gpio39.into_push_pull_output(); // this is the led on the waveshare board
 
-    //currently unused pins reserved for future:
+    // currently unused pins reserved for future:
+    // Note: You'll need to change how the inter-core SIO FIFO data is sent to get these into core1 functions.
     let _unused_pin_40 = pins.gpio40.into_pull_down_disabled();
     let _unused_pin_41 = pins.gpio41.into_pull_down_disabled();
     let _unused_pin_42 = pins.gpio42.into_pull_down_disabled();
@@ -304,7 +304,7 @@ fn main() -> ! {
         .unwrap()
         .build();
 
-    // PIO Encoder test Setup - Original ASM from adamgreen:
+    // PIO Encoder Setup - Original ASM from adamgreen:
     // Copyright 2021 Adam Green (https://github.com/adamgreen/QuadratureDecoder)
     // Licensed under the Apache License, Version 2.0
     // See: http://www.apache.org/licenses/LICENSE-2.0
@@ -382,7 +382,6 @@ fn main() -> ! {
     ]);
     sm_p2.start();
 
-    // ── Encoder state (owned here, referenced from core0 loop) ───────────
     let mut encoders: [EncoderState; NUM_ENCODERS] = [
         EncoderState::new(
             "P1 Encoder",
@@ -424,22 +423,30 @@ fn main() -> ! {
 
             // core1 exclusive setup goes here:
             // Use this for things you want on the memory reserved for the core1 stack, not in main memory
-            // don't use this area for shared peripherals, they should be set up outside this function
+            // don't use this area for shared peripherals, they should be set up outside this function.
 
             // These will handle processing input changes and triggering events based on the input state.
             let menu_handler = MenuHandler::new(&mut display);
             let mut input_handler = InputHandler::new(menu_handler);
 
             // core1 loop state variables:
-            let mut last_core1_heartbeat_tick = 0_u64; // last time core 1 toggled its LED
+            let mut last_core1_heartbeat_tick = 0_u64;
             let mut last_screen_update_ticks = 0_u64;
             let mut last_led_update_ticks = 0_u64;
 
             // core1 loop:
             loop {
-                //get core0 variable info:
+                // core1 heartbeat blink:
+                if timer.get_counter().ticks() > (last_core1_heartbeat_tick + CORE1_HEARTBEAT_RATE)
+                {
+                    heartbeat_led_pin_core1.toggle().unwrap();
+                    last_core1_heartbeat_tick = timer.get_counter().ticks();
+                }
+
+                //get core0 state variable info from SIO FIFO registers:
                 while (sio.fifo.status() & 0b1) != 0 {
                     // Bit 0 VLD: Value is 1 if this core's RX FIFO is not empty (i.e. if FIFO_RD is valid) - RP235x datasheet pg. 67
+                    // These values are manually hardcoded. If you change something that effects them, you need to also fix things here.
                     let packed = sio.fifo.read_blocking();
                     let (header, word) = extract_header_from_word(packed);
                     match header {
@@ -463,13 +470,6 @@ fn main() -> ! {
                 // Update inputs using any new SIO data first so that events can fire based on changes:
                 input_handler.detect_input_changes();
 
-                // core1 heartbeat blink:
-                if timer.get_counter().ticks() > (last_core1_heartbeat_tick + CORE1_HEARTBEAT_RATE)
-                {
-                    heartbeat_led_pin_core1.toggle().unwrap();
-                    last_core1_heartbeat_tick = timer.get_counter().ticks();
-                }
-
                 // core1 led strip update:
                 if timer.get_counter().ticks() > (last_led_update_ticks + LED_FRAME_TICKS) {
                     last_led_update_ticks = timer.get_counter().ticks();
@@ -490,10 +490,8 @@ fn main() -> ! {
         })
         .unwrap();
 
-    // ── Core0 loop ────────────────────────────────────────────────────────
-
     // core0 loop state variables
-    let mut last_core0_heartbeat_tick = 0_u64; // last time core 0 toggled its LED
+    let mut last_core0_heartbeat_tick = 0_u64;
     let mut last_usb_tick_ticks = 0_u64;
     let mut last_usb_key_state_send_ticks = 0_u64;
     let mut last_button_update_ticks = 0_u64;
@@ -512,24 +510,29 @@ fn main() -> ! {
         // prep button states for use on core1:
         let (current_button_state, previous_button_state) = encode_button_state(&buttons);
 
+        // Used for idle timeout reset countdown reset
         if current_button_state != previous_button_state {
             last_button_update_ticks = timer.get_counter().ticks();
         }
 
-        // read encoder positions from FIFO buffers for use here AND on core1:
+        // read encoder positions from PIO FIFO rx buffers for use here AND on core1:
         read_encoder_fifos(&mut encoders, &timer, &mut last_button_update_ticks);
 
         // update encoder direction state based on the newly-read counts:
         update_encoders(&mut encoders, &timer);
 
-        // since the source of truth on the encoder counts is in the PIO registers, we need to clear them ourselves ot reset the encoders.
-        // The easiest way I found to do this is to reset the chip after the idle timeout.
+        // After the idle timeout, we need to clear the encoders back to 0 to prevent rollover.
+        // since the source of truth on the encoder counts is in the PIO registers, we need to
+        // clear them ourselves. The easiest way I found to do this is to reset the chip after
+        // the idle timeout.
         if timer.get_counter().ticks() > (last_button_update_ticks + IDLE_RESET_TIMEOUT_TICKS) {
             cortex_m::peripheral::SCB::sys_reset();
         }
 
-        // send core1 data to core1 if it has room:
-        let fifo_is_empty = (sio.fifo.status() & 0b1) == 0; // Bit 0 VLD: Value is 1 if this core's RX FIFO is not empty (i.e. if FIFO_RD is valid) - RP235x datasheet pg. 67
+        // send core0 data to core1 if it has room:
+        let fifo_is_empty = (sio.fifo.status() & 0b1) == 0;
+        // Bit 0 VLD: Value is 1 if this core's RX FIFO is not empty (i.e. if FIFO_RD is valid) - RP235x datasheet pg. 67
+        // These values are manually hardcoded. If you change something that effects them, you need to also fix things here.
         if fifo_is_empty {
             let packed_current_button_state =
                 add_header_to_word(CURRENT_BUTTON_STATE_HEADER, current_button_state);
@@ -592,11 +595,9 @@ fn main() -> ! {
     }
 }
 
-// ── Standalone helper functions ────────────────────────────────────────────
-
 /// This will iterate over all the buttons in the button array, and will update their state when it differs from the previous value.
 /// States can only change if they occur more than debounce_ticks after the last state change. This will update the state of
-/// both the keyboard buttons as well as the control center buttons.
+/// both the keyboard buttons as well as the control center buttons, or anything else in the buttons array.
 fn update_buttons(buttons: &mut [ButtonState], timer: &Timer<CopyableTimer0>) {
     //we want to update the buttons per their individual debounce timings, and store the current value in the struct itself.
     for button in buttons {
@@ -661,7 +662,7 @@ fn update_encoders(encoders: &mut [EncoderState; NUM_ENCODERS], timer: &Timer<Co
     }
 }
 
-/// Builds the turntable encoder key report by iterating the encoder array.
+/// Builds the encoder key report to send presses via USB by iterating the encoder array.
 /// Each encoder occupies two slots: index `i*2` for the positive-direction key
 /// and index `i*2+1` for the negative-direction key.
 fn get_encoder_keys(encoders: &[EncoderState; NUM_ENCODERS]) -> [Keyboard; NUM_ENCODERS * 2] {
@@ -688,8 +689,8 @@ fn get_encoder_keys(encoders: &[EncoderState; NUM_ENCODERS]) -> [Keyboard; NUM_E
     key_report
 }
 
-/// This function will send the current button state of all buttons in the button array what have a
-/// key mapped via the NKRO USB peripheral
+/// This function will encode the current button state of all buttons in the button array that 
+/// have a key mapped via the NKRO USB peripheral into an array that can be sent via USB as a keypress.
 fn get_keys(buttons: &[ButtonState]) -> [Keyboard; NUM_BUTTONS] {
     // default to taking no action, and only update keys being pressed:
     let mut keyboard: [Keyboard; NUM_BUTTONS] = [Keyboard::NoEventIndicated; NUM_BUTTONS];

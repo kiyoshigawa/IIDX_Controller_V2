@@ -76,7 +76,7 @@ This is a rust program designed for the [Waveshare Core 2350B](https://www.waves
 	- [x] Individual debounce timers for each button
 	- [x] USB updates sent to match the sample rate
 	- [x] Buttons use internal pull-down resistors to allow for external transistor control of LED lighting.
-	- [ ] handle control center buttons with menu system
+	- [x] handle control center buttons with menu system
 - [x] Encoder processing
 	- [x] I used the asm from the [adamgreen github](https://github.com/adamgreen/QuadratureDecoder/blob/master/QuadratureDecoder.pio) example for PIO encoders
   	- [x] Need to verify the code is actually working and get the encoder counts out of the fifo buffer.

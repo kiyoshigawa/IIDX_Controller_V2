@@ -10,6 +10,9 @@ use ssd1306::{Ssd1306, mode::BufferedGraphicsMode, prelude::*};
 use strum::EnumIter;
 use usbd_human_interface_device::page::Keyboard;
 
+pub mod input_handler;
+pub mod menu_handler;
+
 /// Type alias for the OLED display used throughout this project.
 pub type OledDisplay<D> = Ssd1306<D, DisplaySize128x64, BufferedGraphicsMode<DisplaySize128x64>>;
 
@@ -21,12 +24,14 @@ pub type OledDisplay<D> = Ssd1306<D, DisplaySize128x64, BufferedGraphicsMode<Dis
 pub const EXTERNAL_XTAL_FREQ: u32 = 12_000_000;
 
 /// The number of GPIO pins being used as buttons (both keyboard and control center).
+/// If you go higher than 27, you need to update how the SIO FIFO sends work between cores,
+/// or the 31-27 bits will be eatn by the headers.
 pub const NUM_BUTTONS: usize = 27;
 
-/// Number of turntable encoders.
+/// Number of encoders.
 pub const NUM_ENCODERS: usize = 2;
 
-/// Logical (encoder-derived) buttons start at this bit position in the
+/// Logical buttons (not actual physical single-button-to-GPIO) start at this bit position in the
 /// combined u64 state variable on core1. Physical button bits occupy 0–31.
 pub const LOGICAL_BUTTON_OFFSET: usize = 32;
 
@@ -48,7 +53,7 @@ pub const CORE0_HEARTBEAT_RATE: u64 = 1_000_000 / 4;
 /// Heartbeat LED toggle rate for core1 (~3 Hz).
 pub const CORE1_HEARTBEAT_RATE: u64 = 1_000_000 / 3;
 
-/// Time in ticks between LED strip refreshes (~144 Hz).
+/// Min. time in ticks between LED strip refreshes (~144 Hz).
 pub const LED_FRAME_TICKS: u64 = 6_944;
 
 /// Minimum encoder delta before direction registers (hysteresis threshold).
@@ -82,13 +87,9 @@ pub const ENCODER_P2_COUNT_HEADER: u32 = 0b10111;
 
 /// Header for the encoder-direction word sent from core0 to core1.
 /// Packs both encoder directions into the lowest 4 payload bits.
+/// If you need more physical buttons form the spare pins, you can encode
+/// them in this u32, but you'll need to rework the SIO FIFO logic on both cores
 pub const ENCODER_DIRECTION_HEADER: u32 = 0b10101;
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Sub-modules
-// ──────────────────────────────────────────────────────────────────────────────
-
-// ── Button types (shared across cores and library modules) ────────────────────
 
 /// Every input source has a unique code that doubles as a bit offset
 /// into the combined u64 state word on core1.  Physical button codes
@@ -126,10 +127,50 @@ pub enum ButtonCode {
     VolumeDown = 25,
     Mute = 26,
     // Logical encoder-derived buttons (32+)
-    P1Positive = LOGICAL_BUTTON_OFFSET,
+    P1Positive = LOGICAL_BUTTON_OFFSET + 0,
     P1Negative = LOGICAL_BUTTON_OFFSET + 1,
     P2Positive = LOGICAL_BUTTON_OFFSET + 2,
     P2Negative = LOGICAL_BUTTON_OFFSET + 3,
+}
+
+/// Direction of turntable rotation.
+#[derive(Clone, Copy, PartialEq)]
+#[repr(u8)]
+pub enum EncoderDirection {
+    Stopped = 0b00,
+    Positive = 0b01,
+    Negative = 0b10,
+}
+
+// used to pull direction from fifo encoded word data on core1
+impl From<u8> for EncoderDirection {
+    fn from(v: u8) -> Self {
+        match v & 0b11 {
+            0b01 => Self::Positive,
+            0b10 => Self::Negative,
+            _ => Self::Stopped,
+        }
+    }
+}
+
+/// Trait abstracting over the PIO Rx FIFO types so that [`EncoderState`]
+/// can hold a reference to either SM0's or SM1's receiver in a single
+/// homogeneous array.
+pub trait PioRxReader {
+    fn is_empty(&self) -> bool;
+    fn read(&mut self) -> Option<u32>;
+}
+
+use rp235x_hal::pio::{Rx as HalRx, ValidStateMachine};
+
+impl<SM: ValidStateMachine> PioRxReader for HalRx<SM> {
+    fn is_empty(&self) -> bool {
+        self.is_empty()
+    }
+
+    fn read(&mut self) -> Option<u32> {
+        self.read()
+    }
 }
 
 /// Per-button debounced state, including the associated GPIO pin, USB keyboard
@@ -162,61 +203,6 @@ impl ButtonState {
             was_pressed: false,
         }
     }
-
-    /// Returns `true` if the button transitioned from released → pressed on
-    /// the most recent update cycle.
-    #[allow(dead_code)]
-    fn _press_occurred_this_update(&self) -> bool {
-        self.is_pressed && !self.was_pressed
-    }
-
-    /// Returns `true` if the button transitioned from pressed → released on
-    /// the most recent update cycle.
-    #[allow(dead_code)]
-    fn _release_occurred_this_update(&self) -> bool {
-        !self.is_pressed && self.was_pressed
-    }
-}
-
-// ── Encoder types ──────────────────────────────────────────────────────────
-
-/// Direction of turntable rotation.
-#[derive(Clone, Copy, PartialEq)]
-#[repr(u8)]
-pub enum EncoderDirection {
-    Stopped = 0b00,
-    Positive = 0b01,
-    Negative = 0b10,
-}
-
-impl From<u8> for EncoderDirection {
-    fn from(v: u8) -> Self {
-        match v & 0b11 {
-            0b01 => Self::Positive,
-            0b10 => Self::Negative,
-            _ => Self::Stopped,
-        }
-    }
-}
-
-/// Trait abstracting over the PIO Rx FIFO types so that [`EncoderState`]
-/// can hold a reference to either SM0's or SM1's receiver in a single
-/// homogeneous array.
-pub trait PioRxReader {
-    fn is_empty(&self) -> bool;
-    fn read(&mut self) -> Option<u32>;
-}
-
-use rp235x_hal::pio::{Rx as HalRx, ValidStateMachine};
-
-impl<SM: ValidStateMachine> PioRxReader for HalRx<SM> {
-    fn is_empty(&self) -> bool {
-        self.is_empty()
-    }
-
-    fn read(&mut self) -> Option<u32> {
-        self.read()
-    }
 }
 
 /// Per-encoder state: raw position, step-threshold anchor, direction,
@@ -224,27 +210,19 @@ impl<SM: ValidStateMachine> PioRxReader for HalRx<SM> {
 /// to the PIO Rx FIFO used to read raw quadrature ticks.
 pub struct EncoderState<'a> {
     pub name: &'static str,
-    /// Key sent when spinning in the positive direction (e.g. LeftShift).
     pub key_up: Option<Keyboard>,
-    /// Key sent when spinning in the negative direction (e.g. LeftControl).
     pub key_down: Option<Keyboard>,
-
-    /// Current raw position from the PIO quadrature decoder.
     pub count: i32,
+    pub direction: EncoderDirection,
     /// Last position that crossed [`ENCODER_STEP_THRESHOLD`]. Used as the
     /// comparison anchor for delta calculations.
     pub anchor_count: i32,
-
-    /// Current direction (derived from comparing `count` against
-    /// `anchor_count` plus the move timeout).
-    pub direction: EncoderDirection,
     /// Timer tick stamp of the last threshold-crossing event.
     pub last_move_ticks: u64,
-    /// Timer tick stamp of the last PIO FIFO read.
+    /// Timer tick stamp of the last PIO FIFO read. Used for debounce calc.
     pub last_update_ticks: u64,
     /// Minimum ticks between accepting a new PIO sample.
     pub debounce_ticks: u64,
-
     /// Reference to this encoder's PIO Rx FIFO for reading raw counts.
     pub rx: &'a mut dyn PioRxReader,
 }
@@ -272,9 +250,6 @@ impl<'a> EncoderState<'a> {
         }
     }
 }
-
-pub mod input_handler;
-pub mod menu_handler;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Inter-core communication helpers

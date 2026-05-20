@@ -10,45 +10,33 @@ use defmt::debug;
 use display_interface::WriteOnlyDataCommand;
 use strum::IntoEnumIterator;
 
-// ──────────────────────────────────────────────────────────────────────────────
-// ButtonEvents
-// ──────────────────────────────────────────────────────────────────────────────
-
 /// Events generated when a button's debounced state transitions.
 pub(crate) enum ButtonEvents {
     Press(ButtonCode),
     Release(ButtonCode),
 }
 
-// ──────────────────────────────────────────────────────────────────────────────
-// InputHandler
-// ──────────────────────────────────────────────────────────────────────────────
-
-/// Core1-level orchestrator for inputs.
-///
-/// Core1-level orchestrator for inputs.
-///
-/// Receives button/encoder state from core0 via SIO FIFO, combines physical
-/// button bits with logical (encoder-derived) button bits into a single u64
-/// state word, and detects changes to fire events.
+/// This will take data from the physical inputs that was passed through the SIO FIFO buffers
+/// from core0 to core1, then it will process that data to decide on which input states have 
+/// changed, and depending on what buttons changed and how, it will fire off event calls to
+/// other state machines like the LED Strip or MenuHelper
 pub struct InputHandler<'a, D> {
     pub menu_handler: MenuHandler<'a, D>,
-    /// Physical button bitmask received from core0 (bits 0–26 are wired buttons).
+    /// Physical button bitmask received from core0 (bits 0–26 are wired buttons):
     pub current_button_state: u32,
-    /// Raw encoder counts received from core0 (for display/lighting updates).
+    /// Raw encoder counts received from core0 (for display/lighting updates):
     pub encoder_p1_count: i32,
     pub encoder_p2_count: i32,
-    /// Decoded encoder directions (used to build the logical bits).
+    /// Decoded encoder directions (used to build the logical bits):
     pub encoder_p1_direction: EncoderDirection,
     pub encoder_p2_direction: EncoderDirection,
     /// Combined state: lower 32 bits = current_button_state, upper 32 bits
-    /// = logical (encoder-derived) buttons.  Used by detect_input_changes.
+    /// = logical (encoder-derived) buttons:
     pub current_combined_button_state: u64,
     pub previous_combined_button_state: u64,
 }
 
 impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
-    /// Constructs a new `InputHandler` wrapping the given `MenuHandler`.
     pub fn new(menu_handler: MenuHandler<'a, D>) -> Self {
         Self {
             menu_handler,
@@ -62,7 +50,7 @@ impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
         }
     }
 
-    /// Routes a single [`ButtonEvents`] to the menu handler.
+    /// Routes events based on a change in button state.
     fn process_event(&mut self, event: ButtonEvents) {
         match event {
             ButtonEvents::Press(button) => {
@@ -72,7 +60,7 @@ impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
         };
     }
 
-    /// Triggers a display refresh (increments frame counter and redraws).
+    /// Triggers a display refresh on the oled
     pub fn update_display(&mut self) {
         self.menu_handler.frames_rendered += 1;
         self.menu_handler.render_menu(
@@ -84,7 +72,7 @@ impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
 
     /// Builds the combined u64 state from the separate physical and logical
     /// pieces, then scans every [`ButtonCode`] bit to detect transitions and
-    /// fire press/release events.
+    /// triggers events when button states change.
     pub fn detect_input_changes(&mut self) {
         // ── Build combined state from source-of-truth fields ──
         let mut combined = self.current_button_state as u64;
