@@ -5,8 +5,7 @@
 //! for the controller.
 
 use crate::{
-    BUF_SIZE, BUTTON_DEBUG_RECTANGLES, BUTTON_GRAPHIC, BUTTON_GRAPHIC_ROW_HEIGHT, ButtonCode,
-    OledDisplay,
+    BUF_SIZE, ButtonCode, NUM_BUTTONS, OledDisplay,
 };
 use core::fmt::Write;
 use defmt::debug;
@@ -83,6 +82,130 @@ impl core::fmt::Write for FmtBuf {
         Ok(())
     }
 }
+
+// ── Display layout constants ─────────────────────────────────────────────
+
+/// Y-offset at which the button layout graphic is drawn on the 64-px screen.
+/// (63 − 26 − 2 + 1 = 36)
+pub(crate) const BUTTON_GRAPHIC_ROW_HEIGHT: u8 = 36;
+
+// ── Named screen positions ───────────────────────────────────────────
+
+/// Top-left corner of the frame-counter text.
+const FRAME_COUNTER_POS: Point = Point::new(0, 0);
+/// Left-middle position for the encoder 1 count.
+const ENCODER1_LABEL_POS: Point = Point::new(0, 32);
+/// Right-middle position for the encoder 2 count.
+const ENCODER2_LABEL_POS: Point = Point::new(127, 32);
+
+// ── Arrow graphic for encoder direction indicators ───────────────────
+
+/// Arrow-tip pixels relative to the anchor point.  (0,0) is the tip.
+/// Fits in a single u8 width per row (max x = 5, max y = 7).
+#[rustfmt::skip]
+const ARROW_GRAPHIC_PIXELS: [(i32, i32); 12] = [
+    (0,0), (1,0), (2,0),
+    (0,1), (1,1),
+    (0,2), (2,2),
+    (3,3),
+    (4,4), (4,5),
+    (5,6), (5,7),
+];
+
+/// Anchor-point offsets for each encoder logical button, expressed
+/// relative to `BUTTON_GRAPHIC_ROW_HEIGHT`.
+const P1_POSITIVE_ANCHOR: Point = Point::new(1,   BUTTON_GRAPHIC_ROW_HEIGHT as i32 + 5);
+const P1_NEGATIVE_ANCHOR: Point = Point::new(1,   BUTTON_GRAPHIC_ROW_HEIGHT as i32 + 21);
+const P2_POSITIVE_ANCHOR: Point = Point::new(126, BUTTON_GRAPHIC_ROW_HEIGHT as i32 + 5);
+const P2_NEGATIVE_ANCHOR: Point = Point::new(126, BUTTON_GRAPHIC_ROW_HEIGHT as i32 + 21);
+
+/// Orientation to apply when drawing an encoder arrow graphic.
+/// At the screen level: FlipX mirrors left↔right (P1 vs P2),
+/// FlipY mirrors top↔bottom (Positive vs Negative).
+#[derive(Clone, Copy)]
+enum Flip {
+    NoFlip,
+    FlipX,
+    FlipY,
+    FlipXY,
+}
+
+/// Returns the [`Flip`] orientation required for a given encoder
+/// [`ButtonCode`] so the arrow points in the correct direction.
+fn flip_for(code: ButtonCode) -> Flip {
+    match code {
+        ButtonCode::P1Positive => Flip::NoFlip,
+        ButtonCode::P1Negative => Flip::FlipY,
+        ButtonCode::P2Positive => Flip::FlipX,
+        ButtonCode::P2Negative => Flip::FlipXY,
+        _ => Flip::NoFlip,
+    }
+}
+
+// ── Button-layout graphic and debug rectangles ───────────────────────
+
+/// Binary pixel representation of the IIDX deck control layout.
+#[rustfmt::skip]
+pub(crate) const BUTTON_GRAPHIC: [u8; 16 * 26] = [
+    0b00000000, 0b00000000, 0b00001111, 0b10000000, 0b00001111, 0b10000000, 0b01111100, 0b01111100, 0b01111100, 0b01111100, 0b00000001, 0b11110000, 0b00000001, 0b11110000, 0b00000000, 0b00000000, // Row 1
+    0b11100000, 0b00000000, 0b00001000, 0b10000000, 0b00001000, 0b10000000, 0b01000100, 0b01000100, 0b01000100, 0b01000100, 0b00000001, 0b00010000, 0b00000001, 0b00010000, 0b00000000, 0b00000111, // Row 2
+    0b00011000, 0b00000000, 0b00001000, 0b10000000, 0b00001000, 0b10000000, 0b01000100, 0b01000100, 0b01000100, 0b01000100, 0b00000001, 0b00010000, 0b00000001, 0b00010000, 0b00000000, 0b00011000, // Row 3
+    0b00000110, 0b00000000, 0b00001000, 0b10000000, 0b00001000, 0b10000000, 0b01000100, 0b01000100, 0b01000100, 0b01000100, 0b00000001, 0b00010000, 0b00000001, 0b00010000, 0b00000000, 0b01100000, // Row 4
+    0b00000001, 0b00000000, 0b00001111, 0b10000000, 0b00001111, 0b10000000, 0b01111100, 0b01111100, 0b01111100, 0b01111100, 0b00000001, 0b11110000, 0b00000001, 0b11110000, 0b00000000, 0b10000000, // Row 5
+    0b00000000, 0b10000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000001, 0b00000000, // Row 6
+    0b00000000, 0b01000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000010, 0b00000000, // Row 7
+    0b00000000, 0b01000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000111, 0b11000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000010, 0b00000000, // Row 8
+    0b00000000, 0b00100000, 0b00001111, 0b10001111, 0b10001111, 0b10000000, 0b00000000, 0b00000100, 0b01000000, 0b00000000, 0b00000001, 0b11110001, 0b11110001, 0b11110000, 0b00000100, 0b00000000, // Row 9
+    0b00000000, 0b00100000, 0b00001000, 0b10001000, 0b10001000, 0b10000000, 0b00000000, 0b00000100, 0b01000000, 0b00000000, 0b00000001, 0b00010001, 0b00010001, 0b00010000, 0b00000100, 0b00000000, // Row 10
+    0b00000000, 0b00010000, 0b00001000, 0b10001000, 0b10001000, 0b10000000, 0b00000000, 0b00000100, 0b01000000, 0b00000000, 0b00000001, 0b00010001, 0b00010001, 0b00010000, 0b00001000, 0b00000000, // Row 11
+    0b00000000, 0b00010000, 0b00001000, 0b10001000, 0b10001000, 0b10000000, 0b00000000, 0b00000111, 0b11000000, 0b00000000, 0b00000001, 0b00010001, 0b00010001, 0b00010000, 0b00001000, 0b00000000, // Row 12
+    0b00000000, 0b00010000, 0b00001000, 0b10001000, 0b10001000, 0b10000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000001, 0b00010001, 0b00010001, 0b00010000, 0b00001000, 0b00000000, // Row 13
+    0b10000000, 0b00010000, 0b00001000, 0b10001000, 0b10001000, 0b10000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000001, 0b00010001, 0b00010001, 0b00010000, 0b00001000, 0b00000001, // Row 14
+    0b00000000, 0b00010000, 0b00001111, 0b10001111, 0b10001111, 0b10000000, 0b00000011, 0b11100111, 0b11001111, 0b10000000, 0b00000001, 0b11110001, 0b11110001, 0b11110000, 0b00001000, 0b00000000, // Row 15
+    0b00000000, 0b00010000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000010, 0b00100100, 0b01001000, 0b10000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00001000, 0b00000000, // Row 16
+    0b00000000, 0b00010000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000010, 0b00100100, 0b01001000, 0b10000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00001000, 0b00000000, // Row 17
+    0b00000000, 0b00100000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000010, 0b00100100, 0b01001000, 0b10000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000100, 0b00000000, // Row 18
+    0b00000000, 0b00100000, 0b11111000, 0b11111000, 0b11111000, 0b11111000, 0b00000011, 0b11100111, 0b11001111, 0b10000000, 0b00011111, 0b00011111, 0b00011111, 0b00011111, 0b00000100, 0b00000000, // Row 19
+    0b00000000, 0b01000000, 0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00010001, 0b00010001, 0b00010001, 0b00010001, 0b00000010, 0b00000000, // Row 20
+    0b00000000, 0b01000000, 0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00010001, 0b00010001, 0b00010001, 0b00010001, 0b00000010, 0b00000000, // Row 21
+    0b00000000, 0b10000000, 0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b00000000, 0b00000111, 0b11000000, 0b00000000, 0b00010001, 0b00010001, 0b00010001, 0b00010001, 0b00000001, 0b00000000, // Row 22
+    0b00000001, 0b00000000, 0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b00000000, 0b00000100, 0b01000000, 0b00000000, 0b00010001, 0b00010001, 0b00010001, 0b00010001, 0b00000000, 0b10000000, // Row 23
+    0b00000110, 0b00000000, 0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b00000000, 0b00000100, 0b01000000, 0b00000000, 0b00010001, 0b00010001, 0b00010001, 0b00010001, 0b00000000, 0b01100000, // Row 24
+    0b00011000, 0b00000000, 0b11111000, 0b11111000, 0b11111000, 0b11111000, 0b00000000, 0b00000100, 0b01000000, 0b00000000, 0b00011111, 0b00011111, 0b00011111, 0b00011111, 0b00000000, 0b00011000, // Row 25
+    0b11100000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000111, 0b11000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000111, // Row 26
+];
+
+/// Static rectangle coordinates for each button's debug-indicator position.
+#[rustfmt::skip]
+pub(crate) const BUTTON_DEBUG_RECTANGLES: [Rectangle; NUM_BUTTONS] = [
+    Rectangle::new(Point::new( 17, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 19), Size::new(3, 5)),
+    Rectangle::new(Point::new( 21, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  9), Size::new(3, 5)),
+    Rectangle::new(Point::new( 25, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 19), Size::new(3, 5)),
+    Rectangle::new(Point::new( 29, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  9), Size::new(3, 5)),
+    Rectangle::new(Point::new( 33, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 19), Size::new(3, 5)),
+    Rectangle::new(Point::new( 37, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  9), Size::new(3, 5)),
+    Rectangle::new(Point::new( 41, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 19), Size::new(3, 5)),
+    Rectangle::new(Point::new( 21, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  1), Size::new(3, 3)),
+    Rectangle::new(Point::new( 37, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  1), Size::new(3, 3)),
+    Rectangle::new(Point::new( 84, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 19), Size::new(3, 5)),
+    Rectangle::new(Point::new( 88, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  9), Size::new(3, 5)),
+    Rectangle::new(Point::new( 92, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 19), Size::new(3, 5)),
+    Rectangle::new(Point::new( 96, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  9), Size::new(3, 5)),
+    Rectangle::new(Point::new(100, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 19), Size::new(3, 5)),
+    Rectangle::new(Point::new(104, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  9), Size::new(3, 5)),
+    Rectangle::new(Point::new(108, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 19), Size::new(3, 5)),
+    Rectangle::new(Point::new( 88, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  1), Size::new(3, 3)),
+    Rectangle::new(Point::new(104, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  1), Size::new(3, 3)),
+    Rectangle::new(Point::new( 50, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  1), Size::new(3, 3)),
+    Rectangle::new(Point::new( 62, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  8), Size::new(3, 3)),
+    Rectangle::new(Point::new( 62, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 22), Size::new(3, 3)),
+    Rectangle::new(Point::new( 55, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 15), Size::new(3, 3)),
+    Rectangle::new(Point::new( 69, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 15), Size::new(3, 3)),
+    Rectangle::new(Point::new( 62, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 15), Size::new(3, 3)),
+    Rectangle::new(Point::new( 58, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  1), Size::new(3, 3)),
+    Rectangle::new(Point::new( 66, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  1), Size::new(3, 3)),
+    Rectangle::new(Point::new( 74, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  1), Size::new(3, 3)),
+];
 
 // ──────────────────────────────────────────────────────────────────────────────
 // MenuHandler
@@ -183,7 +306,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
         // Frame counter (top-left)
         Text::with_baseline(
             self.line_bufs[0].as_str(),
-            Point::new(0, 0),
+            FRAME_COUNTER_POS,
             self.text_style,
             Baseline::Top,
         )
@@ -193,7 +316,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
         // Encoder 1 (left-middle)
         Text::with_alignment(
             self.line_bufs[1].as_str(),
-            Point::new(0, 32),
+            ENCODER1_LABEL_POS,
             self.text_style,
             Alignment::Left,
         )
@@ -203,7 +326,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
         // Encoder 2 (right-middle)
         Text::with_alignment(
             self.line_bufs[2].as_str(),
-            Point::new(127, 32),
+            ENCODER2_LABEL_POS,
             self.text_style,
             Alignment::Right,
         )
@@ -213,8 +336,8 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
         // Button layout background
         self.draw_empty_button_graphic();
 
-        // Pressed-button indicator dots (only physical buttons, lower 32 bits)
-        self.draw_pressed_buttons(current_combined_button_state as u32);
+        // Pressed-button indicator dots and encoder arrows
+        self.draw_pressed_buttons(current_combined_button_state);
 
         self.display.flush().unwrap();
     }
@@ -226,16 +349,56 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
         image.draw(self.display).unwrap();
     }
 
-    /// Draws filled rectangles for each pressed button based on the 27-bit
-    /// encoded button state. Bits 0–26 correspond to the 27 rectangles in
-    /// [`BUTTON_DEBUG_RECTANGLES`].
-    fn draw_pressed_buttons(&mut self, state: u32) {
+    /// Draws filled rectangles for physical pressed buttons and arrow
+    /// graphics for encoder logical buttons, based on the combined u64 state.
+    fn draw_pressed_buttons(&mut self, combined_state: u64) {
+        // Physical buttons (lower 32 bits)
+        let physical_state = combined_state as u32;
         for (i, rect) in BUTTON_DEBUG_RECTANGLES.iter().enumerate() {
-            if (state >> i) & 1 == 1 {
+            if (physical_state >> i) & 1 == 1 {
                 rect.into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
                     .draw(self.display)
                     .unwrap();
             }
+        }
+
+        // Logical encoder buttons (bits 32–35)
+        for code in &[
+            ButtonCode::P1Positive,
+            ButtonCode::P1Negative,
+            ButtonCode::P2Positive,
+            ButtonCode::P2Negative,
+        ] {
+            if (combined_state >> (*code as usize)) & 1 == 1 {
+                self.draw_encoder_arrow(*code);
+            }
+        }
+    }
+
+    /// Draws the arrow graphic for an encoder logical button, applying the
+    /// appropriate flip and positioning it at the correct anchor point.
+    fn draw_encoder_arrow(&mut self, code: ButtonCode) {
+        use embedded_graphics::Pixel;
+
+        let anchor = match code {
+            ButtonCode::P1Positive => P1_POSITIVE_ANCHOR,
+            ButtonCode::P1Negative => P1_NEGATIVE_ANCHOR,
+            ButtonCode::P2Positive => P2_POSITIVE_ANCHOR,
+            ButtonCode::P2Negative => P2_NEGATIVE_ANCHOR,
+            _ => return,
+        };
+        let flip = flip_for(code);
+
+        for &(dx, dy) in &ARROW_GRAPHIC_PIXELS {
+            let (tx, ty) = match flip {
+                Flip::NoFlip => ( dx,  dy),
+                Flip::FlipX  => (-dx,  dy),
+                Flip::FlipY  => ( dx, -dy),
+                Flip::FlipXY => (-dx, -dy),
+            };
+            Pixel(Point::new(anchor.x + tx, anchor.y + ty), BinaryColor::On)
+                .draw(self.display)
+                .unwrap();
         }
     }
 
