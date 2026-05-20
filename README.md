@@ -57,7 +57,7 @@ This is a rust program designed for the [Waveshare Core 2350B](https://www.waves
 	- [x] Main Core (High Priority, Low Latency Tasks):
 		- [x] NKRO Keyboard and USB Bus
 		- [x] Encoder Position Tracking
-		- [ ] encoder logic to decide when to send and release keypresses based on count changes
+		- [x] encoder logic to decide when to send and release keypresses based on count changes
 	- [ ] Second Core (lower priority cosmetic only features)
 		- [ ] System Control menu handling / screen updates
 		- [ ] Lighting Controller Updates
@@ -68,7 +68,7 @@ This is a rust program designed for the [Waveshare Core 2350B](https://www.waves
       - [x] sio data unreliable getting 0s randomly
         - [x] Need a way to confirm data is valid. Options:
           - Use top 5 bits of each word to encode data type
-- [ ] Button Processing
+- [x] Button Processing
 	- [x] https://github.com/dlkj/usbd-human-interface-device <- Tested and working
 	- [x] Send each button press via USB NKRO library at sample rate.
 		- [x] 1000Hz works
@@ -77,18 +77,21 @@ This is a rust program designed for the [Waveshare Core 2350B](https://www.waves
 	- [x] USB updates sent to match the sample rate
 	- [x] Buttons use internal pull-down resistors to allow for external transistor control of LED lighting.
 	- [ ] handle control center buttons with menu system
-- [ ] Encoder processing
+- [x] Encoder processing
 	- [x] I used the asm from the [adamgreen github](https://github.com/adamgreen/QuadratureDecoder/blob/master/QuadratureDecoder.pio) example for PIO encoders
   	- [x] Need to verify the code is actually working and get the encoder counts out of the fifo buffer.
     - [x] implement encoder debounce - const for now, adjust later
-	- [ ] Revisit encoder position to input press logic from old controller to ensure it is working as intended
-	- [ ] Need to figure out how to send keyboard signals based on encoder position changes using the NKRO USB HID library
+	- [x] Revisit encoder position to input press logic from old controller to ensure it is working as intended
+	- [x] Need to figure out how to send keyboard signals based on encoder position changes using the NKRO USB HID library
   	- [x] SIO FIFO messages work mostly, but I am getting some rogue 0s displayed. Need to investigate.
   - [x] add idle timeout to reset to 0 rotation if unused for a while. Like > 1hr
 - [ ] Lighting Controller [Github repo](https://github.com/kiyoshigawa/lighting_controller)
   - [ ] WS2812 led strip controller:
   	- [ ] https://github.com/rp-rs/ws2812-pio-rs ? Needs testing
-  - [ ] Configure lighting modes that will actually be used to be accessible in control menus
+  - [ ] Configure existing lighting modes that will actually be used to be accessible in control menus
+    - [ ] slow rotate rainbow
+    - [ ] fixed rotate rainbow tied to encoder position
+    - [ ] button-trigger-fired events over any background, configurable
   - [ ] New lighting mode for VU-Meter
 		- [ ] Starts at base, and pulses up around the wikis depending on DSP input levels
 		- [ ] Rainbow decides colors for volume levels
@@ -101,20 +104,30 @@ This is a rust program designed for the [Waveshare Core 2350B](https://www.waves
 			- [ ] wiki-aligned rotation
 - [ ] System Control Functionality
 	- [ ] Features:
-		- [ ] Change Rainbows
-		- [ ] Change Lighting Modes
-		- [ ] Adjust debounce time
-		- [ ] Adjust Sample time
-		- [ ] Adjust encoder position thresholds
-		- [ ] change key bindings?
-		- [ ] display debug data for things like encoder positions, button presses, DSP analysis, etc.?
-	- [ ] Old method (MVP):
-		- [ ] Single button switches to control mode
-		- [ ] The gameplay buttons then change things when pressed
-	- [ ] New method (Better, but more work before it's ready):
-		- [ ] Add dedicated control buttons and screen indicator
+	- [ ] New control method (Better, but more work before it's ready):
+		- [x] Add dedicated control buttons and screen indicator
 			- [x] https://docs.rs/ssd1306/latest/ssd1306/index.html <- tested and working
-		- [ ] will require redoing the center panel on the case to incorporate the new parts/buttons
+		- [x] will require redoing the center panel on the case to incorporate the new parts/buttons
+		- [ ] Needs feature partiwy with old config functions:
+  		- [ ] Change rainbows
+      - [ ] Change lighting modes
+    - [ ] New planned features:
+      - [ ] debug input display
+        - [ ] shows what buttons are being pressed live
+        - [ ] encoder position counter values
+        - [ ] encoder key send indicators (shows up send or down send when 'key' is pressed for wikis)
+      - [ ] OLED pixel test (blank screen)
+      - [ ] permanent storage of settings changes in flash
+        - [ ] must be persistent after power cycle/reprogramming.
+      - [ ] key mapping per-button
+      - [ ] timing adjustments
+        - [ ] debounce for each button
+        - [ ] wiki steps/timeouts
+        - [ ] lighting mode durations
+      - [ ] Needs a working menu system allowing access to the features above.
+	- [ ] ~~Old method (was originally the MVP, Skipped straight to feature creep, lol)~~:
+		- [ ] ~~Single button switches to control mode~~
+  	- [ ] ~~The gameplay buttons then change things when pressed~~
 
 ### Hardware:
 
