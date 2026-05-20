@@ -382,6 +382,22 @@ fn main() -> ! {
     ]);
     sm_p2.start();
 
+    // ── Encoder state (owned here, referenced from core0 loop) ───────────
+    let mut encoders: [EncoderState; NUM_ENCODERS] = [
+        EncoderState::new(
+            "P1 Encoder",
+            Some(Keyboard::LeftShift),
+            Some(Keyboard::LeftControl),
+            &mut rx_p1,
+        ),
+        EncoderState::new(
+            "P2 Encoder",
+            Some(Keyboard::RightControl),
+            Some(Keyboard::RightShift),
+            &mut rx_p2,
+        ),
+    ];
+
     // i2c SD1306 oled setup:
     let interface = I2CDisplayInterface::new(i2c);
     let mut display = Ssd1306::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
@@ -474,10 +490,6 @@ fn main() -> ! {
     let mut last_core0_heartbeat_tick = 0_u64; // last time core 0 toggled its LED
     let mut last_usb_tick_ticks = 0_u64;
     let mut last_usb_key_state_send_ticks = 0_u64;
-    let mut encoder_p1_count = 0_i32;
-    let mut encoder_p2_count = 0_i32;
-    let mut encoder_p1_last_update_ticks = 0_u64;
-    let mut encoder_p2_last_update_ticks = 0_u64;
     let mut last_button_update_ticks = 0_u64;
 
     // core0 loop:
@@ -499,32 +511,10 @@ fn main() -> ! {
         }
 
         // read encoder positions from FIFO buffers for use here AND on core1:
-        while !rx_p1.is_empty() {
-            if let Some(value) = rx_p1.read() {
-                if timer.get_counter().ticks()
-                    > (encoder_p1_last_update_ticks + DEFAULT_ENCODER_DEBOUNCE_TICKS)
-                {
-                    if encoder_p1_count != value as i32 {
-                        encoder_p1_last_update_ticks = timer.get_counter().ticks();
-                        encoder_p1_count = value as i32;
-                        last_button_update_ticks = timer.get_counter().ticks();
-                    }
-                }
-            }
-        }
-        while !rx_p2.is_empty() {
-            if let Some(value) = rx_p2.read() {
-                if timer.get_counter().ticks()
-                    > (encoder_p2_last_update_ticks + DEFAULT_ENCODER_DEBOUNCE_TICKS)
-                {
-                    if encoder_p2_count != value as i32 {
-                        encoder_p2_last_update_ticks = timer.get_counter().ticks();
-                        encoder_p2_count = value as i32;
-                        last_button_update_ticks = timer.get_counter().ticks();
-                    }
-                }
-            }
-        }
+        read_encoder_fifos(&mut encoders, &timer, &mut last_button_update_ticks);
+
+        // update encoder direction state based on the newly-read counts:
+        update_encoders(&mut encoders, &timer);
 
         // since the source of truth on the encoder counts is in the PIO registers, we need to clear them ourselves ot reset the encoders.
         // The easiest way I found to do this is to reset the chip after the idle timeout.
@@ -538,9 +528,9 @@ fn main() -> ! {
             let packed_current_button_state =
                 add_header_to_word(CURRENT_BUTTON_STATE_HEADER, current_button_state);
             let packed_encoder_p1_count =
-                add_header_to_word(ENCODER_P1_COUNT_HEADER, encoder_p1_count as u32);
+                add_header_to_word(ENCODER_P1_COUNT_HEADER, encoders[0].count as u32);
             let packed_encoder_p2_count =
-                add_header_to_word(ENCODER_P2_COUNT_HEADER, encoder_p2_count as u32);
+                add_header_to_word(ENCODER_P2_COUNT_HEADER, encoders[1].count as u32);
             // let reserved_state =
             //     add_header_to_word(RESERVED_STATE_HEADER, previous_button_state);
             sio.fifo.write(packed_current_button_state);
@@ -565,8 +555,13 @@ fn main() -> ! {
         if timer.get_counter().ticks() > (last_usb_key_state_send_ticks + USB_SEND_INTERVAL_TICKS) {
             last_usb_key_state_send_ticks = timer.get_counter().ticks();
             let keys = get_keys(&buttons);
+            let encoder_keys = get_encoder_keys(&encoders);
 
-            match keyboard.device().write_report(keys) {
+            let mut all_keys = [Keyboard::NoEventIndicated; NUM_BUTTONS + NUM_ENCODERS * 2];
+            all_keys[..NUM_BUTTONS].copy_from_slice(&keys);
+            all_keys[NUM_BUTTONS..].copy_from_slice(&encoder_keys);
+
+            match keyboard.device().write_report(all_keys) {
                 Err(UsbHidError::WouldBlock) => {}
                 Err(UsbHidError::Duplicate) => {}
                 Ok(_) => {}
@@ -612,6 +607,77 @@ fn update_buttons(buttons: &mut [ButtonState], timer: &Timer<CopyableTimer0>) {
             button.was_pressed = button.is_pressed;
         }
     }
+}
+
+/// Reads raw quadrature counts from each encoder's PIO Rx FIFO, applying
+/// the per-encoder debounce gate, and updates `encoders[i].count`.
+fn read_encoder_fifos(
+    encoders: &mut [EncoderState; NUM_ENCODERS],
+    timer: &Timer<CopyableTimer0>,
+    last_button_update_ticks: &mut u64,
+) {
+    for enc in encoders.iter_mut() {
+        while !enc.rx.is_empty() {
+            if let Some(value) = enc.rx.read() {
+                let now = timer.get_counter().ticks();
+                if now > (enc.last_update_ticks + enc.debounce_ticks) {
+                    if enc.count != value as i32 {
+                        enc.last_update_ticks = now;
+                        enc.count = value as i32;
+                        *last_button_update_ticks = now;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Updates encoder direction state using step-threshold + move-timeout logic.
+/// Called every core0 loop iteration after reading the PIO FIFOs.
+fn update_encoders(encoders: &mut [EncoderState; NUM_ENCODERS], timer: &Timer<CopyableTimer0>) {
+    let now = timer.get_counter().ticks();
+    for enc in encoders.iter_mut() {
+        let delta = enc.count - enc.anchor_count;
+
+        if delta > ENCODER_STEP_THRESHOLD {
+            enc.anchor_count = enc.count;
+            enc.direction = EncoderDirection::Positive;
+            enc.last_move_ticks = now;
+        } else if delta < -(ENCODER_STEP_THRESHOLD as i32) {
+            enc.anchor_count = enc.count;
+            enc.direction = EncoderDirection::Negative;
+            enc.last_move_ticks = now;
+        } else if now > (enc.last_move_ticks + ENCODER_MOVE_TIMEOUT_TICKS) {
+            enc.direction = EncoderDirection::Stopped;
+        }
+    }
+}
+
+/// Builds the turntable encoder key report by iterating the encoder array.
+/// Each encoder occupies two slots: index `i*2` for the positive-direction key
+/// and index `i*2+1` for the negative-direction key.
+fn get_encoder_keys(encoders: &[EncoderState; NUM_ENCODERS]) -> [Keyboard; NUM_ENCODERS * 2] {
+    let mut key_report = [Keyboard::NoEventIndicated; NUM_ENCODERS * 2];
+    for (i, enc) in encoders.iter().enumerate() {
+        let up_idx = i * 2;
+        let down_idx = i * 2 + 1;
+        match enc.direction {
+            EncoderDirection::Positive => {
+                if let Some(k) = enc.key_up {
+                    key_report[up_idx] = k;
+                }
+            }
+            EncoderDirection::Negative => {
+                if let Some(k) = enc.key_down {
+                    key_report[down_idx] = k;
+                }
+            }
+            EncoderDirection::Stopped => {
+                // Both slots stay NoEventIndicated → keys are released
+            }
+        }
+    }
+    key_report
 }
 
 /// This function will send the current button state of all buttons in the button array what have a

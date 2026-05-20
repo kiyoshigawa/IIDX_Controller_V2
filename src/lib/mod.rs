@@ -54,6 +54,15 @@ pub const BUF_SIZE: usize = 16;
 /// Time in ticks between LED strip refreshes (~144 Hz).
 pub const LED_FRAME_TICKS: u64 = 6_944;
 
+/// Minimum encoder delta before direction registers (hysteresis threshold).
+pub const ENCODER_STEP_THRESHOLD: i32 = 20;
+
+/// Timer ticks of inactivity before releasing the turntable key (100 ms).
+pub const ENCODER_MOVE_TIMEOUT_TICKS: u64 = 100_000;
+
+/// Number of turntable encoders.
+pub const NUM_ENCODERS: usize = 2;
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Inter-core FIFO protocol headers
 // ──────────────────────────────────────────────────────────────────────────────
@@ -225,6 +234,90 @@ impl ButtonState {
     #[allow(dead_code)]
     fn _release_occurred_this_update(&self) -> bool {
         !self.is_pressed && self.was_pressed
+    }
+}
+
+// ── Encoder types ──────────────────────────────────────────────────────────
+
+/// Direction of turntable rotation.
+#[derive(Clone, Copy, PartialEq)]
+pub enum EncoderDirection {
+    Stopped,
+    Positive,
+    Negative,
+}
+
+/// Trait abstracting over the PIO Rx FIFO types so that [`EncoderState`]
+/// can hold a reference to either SM0's or SM1's receiver in a single
+/// homogeneous array.
+pub trait PioRxReader {
+    fn is_empty(&self) -> bool;
+    fn read(&mut self) -> Option<u32>;
+}
+
+use rp235x_hal::pio::{Rx as HalRx, ValidStateMachine};
+
+impl<SM: ValidStateMachine> PioRxReader for HalRx<SM> {
+    fn is_empty(&self) -> bool {
+        self.is_empty()
+    }
+
+    fn read(&mut self) -> Option<u32> {
+        self.read()
+    }
+}
+
+/// Per-encoder state: raw position, step-threshold anchor, direction,
+/// move-timeout timing, the USB keys for each direction, and a reference
+/// to the PIO Rx FIFO used to read raw quadrature ticks.
+pub struct EncoderState<'a> {
+    pub name: &'static str,
+    /// Key sent when spinning in the positive direction (e.g. LeftShift).
+    pub key_up: Option<Keyboard>,
+    /// Key sent when spinning in the negative direction (e.g. LeftControl).
+    pub key_down: Option<Keyboard>,
+
+    /// Current raw position from the PIO quadrature decoder.
+    pub count: i32,
+    /// Last position that crossed [`ENCODER_STEP_THRESHOLD`]. Used as the
+    /// comparison anchor for delta calculations.
+    pub anchor_count: i32,
+
+    /// Current direction (derived from comparing `count` against
+    /// `anchor_count` plus the move timeout).
+    pub direction: EncoderDirection,
+    /// Timer tick stamp of the last threshold-crossing event.
+    pub last_move_ticks: u64,
+    /// Timer tick stamp of the last PIO FIFO read.
+    pub last_update_ticks: u64,
+    /// Minimum ticks between accepting a new PIO sample.
+    pub debounce_ticks: u64,
+
+    /// Reference to this encoder's PIO Rx FIFO for reading raw counts.
+    pub rx: &'a mut dyn PioRxReader,
+}
+
+impl<'a> EncoderState<'a> {
+    /// Creates a new `EncoderState` with the given name, key bindings,
+    /// and PIO Rx FIFO reference. All tracking fields start at default values.
+    pub fn new(
+        name: &'static str,
+        key_up: Option<Keyboard>,
+        key_down: Option<Keyboard>,
+        rx: &'a mut dyn PioRxReader,
+    ) -> Self {
+        Self {
+            name,
+            key_up,
+            key_down,
+            count: 0,
+            anchor_count: 0,
+            direction: EncoderDirection::Stopped,
+            last_move_ticks: 0,
+            last_update_ticks: 0,
+            debounce_ticks: DEFAULT_ENCODER_DEBOUNCE_TICKS,
+            rx,
+        }
     }
 }
 
