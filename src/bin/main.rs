@@ -450,7 +450,12 @@ fn main() -> ! {
                         ENCODER_P2_COUNT_HEADER => {
                             input_handler.encoder_p2_count = sign_extend_27bit(word)
                         }
-                        // RESERVED_STATE_HEADER => {},
+                        ENCODER_DIRECTION_HEADER => {
+                            input_handler.encoder_p1_direction =
+                                EncoderDirection::from((word & 0b11) as u8);
+                            input_handler.encoder_p2_direction =
+                                EncoderDirection::from(((word >> 2) & 0b11) as u8);
+                        }
                         _ => {} // unknown header, ignore
                     }
                 }
@@ -479,7 +484,8 @@ fn main() -> ! {
 
                 // We update this last so everything that needs to react to an input change in the
                 // handlers above can do so before we reset them.
-                input_handler.previous_button_state = input_handler.current_button_state;
+                input_handler.previous_combined_button_state =
+                    input_handler.current_combined_button_state;
             }
         })
         .unwrap();
@@ -531,12 +537,14 @@ fn main() -> ! {
                 add_header_to_word(ENCODER_P1_COUNT_HEADER, encoders[0].count as u32);
             let packed_encoder_p2_count =
                 add_header_to_word(ENCODER_P2_COUNT_HEADER, encoders[1].count as u32);
-            // let reserved_state =
-            //     add_header_to_word(RESERVED_STATE_HEADER, previous_button_state);
+            let encoder_direction_bits = (encoders[0].direction as u32) & 0b11
+                | ((encoders[1].direction as u32) & 0b11) << 2;
+            let packed_encoder_direction =
+                add_header_to_word(ENCODER_DIRECTION_HEADER, encoder_direction_bits);
             sio.fifo.write(packed_current_button_state);
             sio.fifo.write(packed_encoder_p1_count);
             sio.fifo.write(packed_encoder_p2_count);
-            // sio.fifo.write(reserved_state);
+            sio.fifo.write(packed_encoder_direction);
         }
 
         // Sends a USB tick at the 1ms interval specified by USB spec

@@ -27,6 +27,13 @@ pub const EXTERNAL_XTAL_FREQ: u32 = 12_000_000;
 /// The number of GPIO pins being used as buttons (both keyboard and control center).
 pub const NUM_BUTTONS: usize = 27;
 
+/// Number of turntable encoders.
+pub const NUM_ENCODERS: usize = 2;
+
+/// Logical (encoder-derived) buttons start at this bit position in the
+/// combined u64 state variable on core1. Physical button bits occupy 0–31.
+pub const LOGICAL_BUTTON_OFFSET: usize = 32;
+
 /// Default button debounce time in timer ticks (1,000,000 ticks per second).
 pub const DEFAULT_BUTTON_DEBOUNCE_TICKS: u64 = 10_000;
 
@@ -39,17 +46,11 @@ pub const USB_TICK_INTERVAL_TICKS: u64 = 1_000;
 /// Keyboard HID report send rate in timer ticks.
 pub const USB_SEND_INTERVAL_TICKS: u64 = 1_000;
 
-/// Minimum ticks between OLED screen refreshes (~10 Hz).
-pub const SCREEN_REFRESH_TICKS: u64 = 100_000;
-
 /// Heartbeat LED toggle rate for core0 (~4 Hz).
 pub const CORE0_HEARTBEAT_RATE: u64 = 1_000_000 / 4;
 
 /// Heartbeat LED toggle rate for core1 (~3 Hz).
 pub const CORE1_HEARTBEAT_RATE: u64 = 1_000_000 / 3;
-
-/// Size (in bytes) of each `FmtBuf` text-buffer line.
-pub const BUF_SIZE: usize = 16;
 
 /// Time in ticks between LED strip refreshes (~144 Hz).
 pub const LED_FRAME_TICKS: u64 = 6_944;
@@ -60,8 +61,19 @@ pub const ENCODER_STEP_THRESHOLD: i32 = 20;
 /// Timer ticks of inactivity before releasing the turntable key (100 ms).
 pub const ENCODER_MOVE_TIMEOUT_TICKS: u64 = 100_000;
 
-/// Number of turntable encoders.
-pub const NUM_ENCODERS: usize = 2;
+/// Idle timeout for encoder counts. If no input change occurs within this
+/// window, the device performs a system reset.
+pub const IDLE_RESET_TIMEOUT_TICKS: u64 = 10_000_000 * 900;
+
+/// Minimum ticks between OLED screen refreshes (~10 Hz).
+pub const SCREEN_REFRESH_TICKS: u64 = 100_000;
+
+/// Size (in bytes) of each `FmtBuf` text-buffer line.
+pub const BUF_SIZE: usize = 16;
+
+/// Y-offset at which the button layout graphic is drawn on the 64-px screen.
+/// (63 − 26 − 2 + 1 = 36)
+pub const BUTTON_GRAPHIC_ROW_HEIGHT: u8 = 36;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Inter-core FIFO protocol headers
@@ -76,17 +88,9 @@ pub const ENCODER_P1_COUNT_HEADER: u32 = 0b10110;
 /// Header for encoder P2 count sent from core0 to core1.
 pub const ENCODER_P2_COUNT_HEADER: u32 = 0b10111;
 
-/// Idle timeout for encoder counts. If no input change occurs within this
-/// window, the device performs a system reset.
-pub const IDLE_RESET_TIMEOUT_TICKS: u64 = 10_000_000 * 900;
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Button-layout graphic constants (for the debug display)
-// ──────────────────────────────────────────────────────────────────────────────
-
-/// Y-offset at which the button layout graphic is drawn on the 64-px screen.
-/// (63 − 26 − 2 + 1 = 36)
-pub const BUTTON_GRAPHIC_ROW_HEIGHT: u8 = 36;
+/// Header for the encoder-direction word sent from core0 to core1.
+/// Packs both encoder directions into the lowest 4 payload bits.
+pub const ENCODER_DIRECTION_HEADER: u32 = 0b10101;
 
 /// Binary pixel representation of the IIDX deck control layout. 0 = off, 1 = on.
 #[rustfmt::skip]
@@ -157,11 +161,14 @@ pub const BUTTON_DEBUG_RECTANGLES: [Rectangle; NUM_BUTTONS] = [
 
 // ── Button types (shared across cores and library modules) ────────────────────
 
-/// Enum variants for every button in the `buttons` array, with index values
-/// matching their position in the array.
+/// Every input source has a unique code that doubles as a bit offset
+/// into the combined u64 state word on core1.  Physical button codes
+/// (0–31) index the lower half; logical (encoder-derived) button codes
+/// (32+) index the upper half, so the same bit-scanning logic handles both.
 #[repr(usize)]
 #[derive(Clone, Copy, EnumIter)]
-pub enum ButtonOffsets {
+pub enum ButtonCode {
+    // Physical buttons (0–31, currently 0–26 are wired)
     P1_1 = 0,
     P1_2 = 1,
     P1_3 = 2,
@@ -189,6 +196,11 @@ pub enum ButtonOffsets {
     VolumeUp = 24,
     VolumeDown = 25,
     Mute = 26,
+    // Logical encoder-derived buttons (32+)
+    P1Positive = LOGICAL_BUTTON_OFFSET,
+    P1Negative = LOGICAL_BUTTON_OFFSET + 1,
+    P2Positive = LOGICAL_BUTTON_OFFSET + 2,
+    P2Negative = LOGICAL_BUTTON_OFFSET + 3,
 }
 
 /// Per-button debounced state, including the associated GPIO pin, USB keyboard
@@ -241,10 +253,21 @@ impl ButtonState {
 
 /// Direction of turntable rotation.
 #[derive(Clone, Copy, PartialEq)]
+#[repr(u8)]
 pub enum EncoderDirection {
-    Stopped,
-    Positive,
-    Negative,
+    Stopped = 0b00,
+    Positive = 0b01,
+    Negative = 0b10,
+}
+
+impl From<u8> for EncoderDirection {
+    fn from(v: u8) -> Self {
+        match v & 0b11 {
+            0b01 => Self::Positive,
+            0b10 => Self::Negative,
+            _ => Self::Stopped,
+        }
+    }
 }
 
 /// Trait abstracting over the PIO Rx FIFO types so that [`EncoderState`]

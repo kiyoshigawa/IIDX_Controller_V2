@@ -5,7 +5,7 @@
 //! for the controller.
 
 use crate::{
-    BUF_SIZE, BUTTON_DEBUG_RECTANGLES, BUTTON_GRAPHIC, BUTTON_GRAPHIC_ROW_HEIGHT, ButtonOffsets,
+    BUF_SIZE, BUTTON_DEBUG_RECTANGLES, BUTTON_GRAPHIC, BUTTON_GRAPHIC_ROW_HEIGHT, ButtonCode,
     OledDisplay,
 };
 use core::fmt::Write;
@@ -39,7 +39,7 @@ pub(crate) enum MenuMode {
 
 /// Menu-related events emitted when a control-center button is pressed.
 pub enum MenuEvents {
-    Press(ButtonOffsets),
+    Press(ButtonCode),
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -126,11 +126,11 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             MenuEvents::Press(button) => {
                 debug!("MENU PRESS! {}", button as usize);
                 match button {
-                    ButtonOffsets::CcUp => self.menu_mode = MenuMode::PixelTest,
-                    ButtonOffsets::CcSelect => self.menu_mode = MenuMode::Debug,
-                    ButtonOffsets::CcDown => self.menu_mode = MenuMode::Debug,
-                    ButtonOffsets::CcLeft => self.menu_mode = MenuMode::Debug,
-                    ButtonOffsets::CcRight => self.menu_mode = MenuMode::Debug,
+                    ButtonCode::CcUp => self.menu_mode = MenuMode::PixelTest,
+                    ButtonCode::CcSelect => self.menu_mode = MenuMode::Debug,
+                    ButtonCode::CcDown => self.menu_mode = MenuMode::Debug,
+                    ButtonCode::CcLeft => self.menu_mode = MenuMode::Debug,
+                    ButtonCode::CcRight => self.menu_mode = MenuMode::Debug,
                     _ => {}
                 }
             }
@@ -143,14 +143,16 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
     /// [`MenuMode`].
     pub fn render_menu(
         &mut self,
-        current_button_state: u32,
+        current_combined_button_state: u64,
         encoder_p1_count: i32,
         encoder_p2_count: i32,
     ) {
         match self.menu_mode {
-            MenuMode::Debug => {
-                self.print_debug_display(current_button_state, encoder_p1_count, encoder_p2_count)
-            }
+            MenuMode::Debug => self.print_debug_display(
+                current_combined_button_state,
+                encoder_p1_count,
+                encoder_p2_count,
+            ),
             MenuMode::PixelTest => self.print_pixel_test(),
             MenuMode::Idle => {}
             MenuMode::TextMenu => {}
@@ -163,7 +165,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
     /// button-layout graphic, and pressed-button indicator dots.
     fn print_debug_display(
         &mut self,
-        current_button_state: u32,
+        current_combined_button_state: u64,
         encoder_p1_count: i32,
         encoder_p2_count: i32,
     ) {
@@ -211,8 +213,8 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
         // Button layout background
         self.draw_empty_button_graphic();
 
-        // Pressed-button indicator dots
-        self.draw_pressed_buttons(current_button_state);
+        // Pressed-button indicator dots (only physical buttons, lower 32 bits)
+        self.draw_pressed_buttons(current_combined_button_state as u32);
 
         self.display.flush().unwrap();
     }

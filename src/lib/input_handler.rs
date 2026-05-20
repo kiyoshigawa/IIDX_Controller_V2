@@ -4,8 +4,8 @@
 //! button/encoder state from core0 via SIO FIFO, detects changes, and
 //! forwards events to [`MenuHandler`](crate::menu_handler::MenuHandler).
 
-use crate::ButtonOffsets;
 use crate::menu_handler::{MenuEvents, MenuHandler};
+use crate::{ButtonCode, EncoderDirection};
 use defmt::debug;
 use display_interface::WriteOnlyDataCommand;
 use strum::IntoEnumIterator;
@@ -16,8 +16,8 @@ use strum::IntoEnumIterator;
 
 /// Events generated when a button's debounced state transitions.
 pub(crate) enum ButtonEvents {
-    Press(ButtonOffsets),
-    Release(ButtonOffsets),
+    Press(ButtonCode),
+    Release(ButtonCode),
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -26,15 +26,25 @@ pub(crate) enum ButtonEvents {
 
 /// Core1-level orchestrator for inputs.
 ///
-/// Holds the current and previous 27-bit button-state bitmask, encoder counts
-/// received from core0, and a [`MenuHandler`] that processes menu-related
-/// button events and drives the OLED display.
+/// Core1-level orchestrator for inputs.
+///
+/// Receives button/encoder state from core0 via SIO FIFO, combines physical
+/// button bits with logical (encoder-derived) button bits into a single u64
+/// state word, and detects changes to fire events.
 pub struct InputHandler<'a, D> {
     pub menu_handler: MenuHandler<'a, D>,
+    /// Physical button bitmask received from core0 (bits 0–26 are wired buttons).
     pub current_button_state: u32,
-    pub previous_button_state: u32,
+    /// Raw encoder counts received from core0 (for display/lighting updates).
     pub encoder_p1_count: i32,
     pub encoder_p2_count: i32,
+    /// Decoded encoder directions (used to build the logical bits).
+    pub encoder_p1_direction: EncoderDirection,
+    pub encoder_p2_direction: EncoderDirection,
+    /// Combined state: lower 32 bits = current_button_state, upper 32 bits
+    /// = logical (encoder-derived) buttons.  Used by detect_input_changes.
+    pub current_combined_button_state: u64,
+    pub previous_combined_button_state: u64,
 }
 
 impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
@@ -43,9 +53,12 @@ impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
         Self {
             menu_handler,
             current_button_state: 0_u32,
-            previous_button_state: 0_u32,
             encoder_p1_count: 0_i32,
             encoder_p2_count: 0_i32,
+            encoder_p1_direction: EncoderDirection::Stopped,
+            encoder_p2_direction: EncoderDirection::Stopped,
+            current_combined_button_state: 0_u64,
+            previous_combined_button_state: 0_u64,
         }
     }
 
@@ -63,26 +76,41 @@ impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
     pub fn update_display(&mut self) {
         self.menu_handler.frames_rendered += 1;
         self.menu_handler.render_menu(
-            self.current_button_state,
+            self.current_combined_button_state,
             self.encoder_p1_count,
             self.encoder_p2_count,
         );
     }
 
-    /// Scans every button bit in `current_button_state` vs
-    /// `previous_button_state` and fires press/release events when a
-    /// transition is detected.
+    /// Builds the combined u64 state from the separate physical and logical
+    /// pieces, then scans every [`ButtonCode`] bit to detect transitions and
+    /// fire press/release events.
     pub fn detect_input_changes(&mut self) {
-        let current_state = self.current_button_state;
-        let previous_state = self.previous_button_state;
-        for button in ButtonOffsets::iter() {
-            let offset = button as usize;
-            let current_pressed = (current_state >> offset) & 1 == 1;
-            let previous_pressed = (previous_state >> offset) & 1 == 1;
-            if current_pressed && !previous_pressed {
-                self.process_event(ButtonEvents::Press(button));
-            } else if !current_pressed && previous_pressed {
-                self.process_event(ButtonEvents::Release(button));
+        // ── Build combined state from source-of-truth fields ──
+        let mut combined = self.current_button_state as u64;
+        match self.encoder_p1_direction {
+            EncoderDirection::Positive => combined |= 1_u64 << (ButtonCode::P1Positive as usize),
+            EncoderDirection::Negative => combined |= 1_u64 << (ButtonCode::P1Negative as usize),
+            EncoderDirection::Stopped => {} // no logical button pressed
+        }
+        match self.encoder_p2_direction {
+            EncoderDirection::Positive => combined |= 1_u64 << (ButtonCode::P2Positive as usize),
+            EncoderDirection::Negative => combined |= 1_u64 << (ButtonCode::P2Negative as usize),
+            EncoderDirection::Stopped => {} // no logical button pressed
+        }
+        self.current_combined_button_state = combined;
+
+        // ── Uniform bit-scan over every ButtonCode ──
+        let current = self.current_combined_button_state;
+        let previous = self.previous_combined_button_state;
+        for code in ButtonCode::iter() {
+            let offset = code as usize;
+            let pressed = (current >> offset) & 1 == 1;
+            let was_pressed = (previous >> offset) & 1 == 1;
+            if pressed && !was_pressed {
+                self.process_event(ButtonEvents::Press(code));
+            } else if !pressed && was_pressed {
+                self.process_event(ButtonEvents::Release(code));
             }
         }
     }
