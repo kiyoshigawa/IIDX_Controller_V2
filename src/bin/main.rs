@@ -80,41 +80,29 @@ fn main() -> ! {
     .ok()
     .unwrap();
 
-    // Read the flash memory into the data struct I made so we can use/change it as needed.
-    let storage: &FlashStoragePersistentMemory =
-        unsafe { &*(FLASH_STORAGE_BASE_ADDR as *const FlashStoragePersistentMemory) };
+    // To reset persistent storage to factory defaults, uncomment the lines below,
+    // flash the device, then re-comment and re-flash:
+    // unsafe {
+    //     clear_storage(&FlashStoragePersistentMemory::default());
+    // }
 
-    if storage.has_been_written() {
-        let current_boots = storage.num_boots;
-        info!("Storage has been initialized! Using persistent storage for settings values.");
+    // Read the persistent configuration from flash so we can use it to initilize everything
+    let config: &FlashStoragePersistentMemory = unsafe {
+        let raw = &*(FLASH_STORAGE_BASE_ADDR as *const FlashStoragePersistentMemory);
 
-        let new_storage = FlashStoragePersistentMemory {
-            header: FLASH_HEADER,
-            header_inv: FLASH_HEADER_INV,
-            num_boots: current_boots.wrapping_add(1),
-        };
+        if !raw.has_been_written() {
+            info!("Storage is fresh. Writing default configuration to flash...");
+            let defaults = FlashStoragePersistentMemory::default();
+            write_storage(&defaults);
+            info!("Default configuration written.");
 
-        unsafe {
-            write_storage(&new_storage);
+            // Re-read after cache flush so we see the freshly written data.
+            &*(FLASH_STORAGE_BASE_ADDR as *const FlashStoragePersistentMemory)
+        } else {
+            info!("Storage is initialized. Using stored configuration.");
+            raw
         }
-        info!(
-            "Boot count incremented to: {}",
-            current_boots.wrapping_add(1)
-        );
-    } else {
-        info!("Storage is fresh / not initialized. Writing initial values using defaults...");
-
-        let storage = FlashStoragePersistentMemory {
-            header: FLASH_HEADER,
-            header_inv: FLASH_HEADER_INV,
-            num_boots: 1,
-        };
-
-        unsafe {
-            write_storage(&storage);
-        }
-        info!("Initial values written.");
-    }
+    };
 
     // Shared timer for timed tasks, counts at 1_000_000 ticks per second (or 1 tick per us if you prefer)
     let timer = hal::Timer::new_timer0(pac.TIMER0, &mut pac.RESETS, &clocks);
@@ -139,137 +127,164 @@ fn main() -> ! {
         ButtonState::new(
             "P1_1",
             pins.gpio0.into_pull_down_input().into_dyn_pin(),
-            Some(Keyboard::Z),
+            u8_to_key(config.buttons[0].key),
+            config.buttons[0].debounce_ticks,
         ),
         ButtonState::new(
             "P1_2",
             pins.gpio1.into_pull_down_input().into_dyn_pin(),
-            Some(Keyboard::S),
+            u8_to_key(config.buttons[1].key),
+            config.buttons[1].debounce_ticks,
         ),
         ButtonState::new(
             "P1_3",
             pins.gpio2.into_pull_down_input().into_dyn_pin(),
-            Some(Keyboard::X),
+            u8_to_key(config.buttons[2].key),
+            config.buttons[2].debounce_ticks,
         ),
         ButtonState::new(
             "P1_4",
             pins.gpio3.into_pull_down_input().into_dyn_pin(),
-            Some(Keyboard::D),
+            u8_to_key(config.buttons[3].key),
+            config.buttons[3].debounce_ticks,
         ),
         ButtonState::new(
             "P1_5",
             pins.gpio4.into_pull_down_input().into_dyn_pin(),
-            Some(Keyboard::C),
+            u8_to_key(config.buttons[4].key),
+            config.buttons[4].debounce_ticks,
         ),
         ButtonState::new(
             "P1_6",
             pins.gpio5.into_pull_down_input().into_dyn_pin(),
-            Some(Keyboard::F),
+            u8_to_key(config.buttons[5].key),
+            config.buttons[5].debounce_ticks,
         ),
         ButtonState::new(
             "P1_7",
             pins.gpio6.into_pull_down_input().into_dyn_pin(),
-            Some(Keyboard::V),
+            u8_to_key(config.buttons[6].key),
+            config.buttons[6].debounce_ticks,
         ),
         ButtonState::new(
             "P1_Start",
             pins.gpio7.into_pull_down_input().into_dyn_pin(),
-            Some(Keyboard::Grave),
+            u8_to_key(config.buttons[7].key),
+            config.buttons[7].debounce_ticks,
         ),
         ButtonState::new(
             "P1_Select",
             pins.gpio8.into_pull_down_input().into_dyn_pin(),
-            Some(Keyboard::Keyboard1),
+            u8_to_key(config.buttons[8].key),
+            config.buttons[8].debounce_ticks,
         ),
         ButtonState::new(
             "P2_1",
             pins.gpio9.into_pull_down_input().into_dyn_pin(),
-            Some(Keyboard::M),
+            u8_to_key(config.buttons[9].key),
+            config.buttons[9].debounce_ticks,
         ),
         ButtonState::new(
             "P2_2",
             pins.gpio10.into_pull_down_input().into_dyn_pin(),
-            Some(Keyboard::K),
+            u8_to_key(config.buttons[10].key),
+            config.buttons[10].debounce_ticks,
         ),
         ButtonState::new(
             "P2_3",
             pins.gpio11.into_pull_down_input().into_dyn_pin(),
-            Some(Keyboard::Comma),
+            u8_to_key(config.buttons[11].key),
+            config.buttons[11].debounce_ticks,
         ),
         ButtonState::new(
             "P2_4",
             pins.gpio12.into_pull_down_input().into_dyn_pin(),
-            Some(Keyboard::L),
+            u8_to_key(config.buttons[12].key),
+            config.buttons[12].debounce_ticks,
         ),
         ButtonState::new(
             "P2_5",
             pins.gpio13.into_pull_down_input().into_dyn_pin(),
-            Some(Keyboard::Dot),
+            u8_to_key(config.buttons[13].key),
+            config.buttons[13].debounce_ticks,
         ),
         ButtonState::new(
             "P2_6",
             pins.gpio14.into_pull_down_input().into_dyn_pin(),
-            Some(Keyboard::Semicolon),
+            u8_to_key(config.buttons[14].key),
+            config.buttons[14].debounce_ticks,
         ),
         ButtonState::new(
             "P2_7",
             pins.gpio15.into_pull_down_input().into_dyn_pin(),
-            Some(Keyboard::ForwardSlash),
+            u8_to_key(config.buttons[15].key),
+            config.buttons[15].debounce_ticks,
         ),
         ButtonState::new(
             "P2_Start",
             pins.gpio16.into_pull_down_input().into_dyn_pin(),
-            Some(Keyboard::DeleteBackspace),
+            u8_to_key(config.buttons[16].key),
+            config.buttons[16].debounce_ticks,
         ),
         ButtonState::new(
             "P2_Select",
             pins.gpio17.into_pull_down_input().into_dyn_pin(),
-            Some(Keyboard::Equal),
+            u8_to_key(config.buttons[17].key),
+            config.buttons[17].debounce_ticks,
         ),
         ButtonState::new(
             "Escape",
             pins.gpio18.into_pull_down_input().into_dyn_pin(),
-            Some(Keyboard::Escape),
+            u8_to_key(config.buttons[18].key),
+            config.buttons[18].debounce_ticks,
         ),
         ButtonState::new(
             "CC_Up",
             pins.gpio19.into_pull_down_input().into_dyn_pin(),
-            None,
+            u8_to_key(config.buttons[19].key),
+            config.buttons[19].debounce_ticks,
         ),
         ButtonState::new(
             "CC_Down",
             pins.gpio20.into_pull_down_input().into_dyn_pin(),
-            None,
+            u8_to_key(config.buttons[20].key),
+            config.buttons[20].debounce_ticks,
         ),
         ButtonState::new(
             "CC_Left",
             pins.gpio21.into_pull_down_input().into_dyn_pin(),
-            None,
+            u8_to_key(config.buttons[21].key),
+            config.buttons[21].debounce_ticks,
         ),
         ButtonState::new(
             "CC_Right",
             pins.gpio22.into_pull_down_input().into_dyn_pin(),
-            None,
+            u8_to_key(config.buttons[22].key),
+            config.buttons[22].debounce_ticks,
         ),
         ButtonState::new(
             "CC_Select",
             pins.gpio23.into_pull_down_input().into_dyn_pin(),
-            None,
+            u8_to_key(config.buttons[23].key),
+            config.buttons[23].debounce_ticks,
         ),
         ButtonState::new(
             "Volume_Up",
             pins.gpio24.into_pull_down_input().into_dyn_pin(),
-            Some(Keyboard::VolumeUp),
+            u8_to_key(config.buttons[24].key),
+            config.buttons[24].debounce_ticks,
         ),
         ButtonState::new(
             "Volume_Down",
             pins.gpio25.into_pull_down_input().into_dyn_pin(),
-            Some(Keyboard::VolumeDown),
+            u8_to_key(config.buttons[25].key),
+            config.buttons[25].debounce_ticks,
         ),
         ButtonState::new(
             "Mute",
             pins.gpio26.into_pull_down_input().into_dyn_pin(),
-            Some(Keyboard::Mute),
+            u8_to_key(config.buttons[26].key),
+            config.buttons[26].debounce_ticks,
         ),
     ];
 
@@ -422,15 +437,21 @@ fn main() -> ! {
     let mut encoders: [EncoderState; NUM_ENCODERS] = [
         EncoderState::new(
             "P1 Encoder",
-            Some(Keyboard::LeftShift),
-            Some(Keyboard::LeftControl),
+            u8_to_key(config.encoders[0].key_up),
+            u8_to_key(config.encoders[0].key_down),
             &mut rx_p1,
+            config.encoders[0].debounce_ticks,
+            config.encoders[0].step_threshold,
+            config.encoders[0].move_timeout_ticks,
         ),
         EncoderState::new(
             "P2 Encoder",
-            Some(Keyboard::RightControl),
-            Some(Keyboard::RightShift),
+            u8_to_key(config.encoders[1].key_up),
+            u8_to_key(config.encoders[1].key_down),
             &mut rx_p2,
+            config.encoders[1].debounce_ticks,
+            config.encoders[1].step_threshold,
+            config.encoders[1].move_timeout_ticks,
         ),
     ];
 
@@ -678,22 +699,22 @@ fn read_encoder_fifos(
     }
 }
 
-/// Updates encoder direction state using step-threshold + move-timeout logic.
+/// Updates encoder direction state using per-encoder step-threshold + move-timeout logic.
 /// Called every core0 loop iteration after reading the PIO FIFOs.
 fn update_encoders(encoders: &mut [EncoderState; NUM_ENCODERS], timer: &Timer<CopyableTimer0>) {
     let now = timer.get_counter().ticks();
     for enc in encoders.iter_mut() {
         let delta = enc.count - enc.anchor_count;
 
-        if delta > ENCODER_STEP_THRESHOLD {
+        if delta > enc.step_threshold {
             enc.anchor_count = enc.count;
             enc.direction = EncoderDirection::Positive;
             enc.last_move_ticks = now;
-        } else if delta < -(ENCODER_STEP_THRESHOLD as i32) {
+        } else if delta < -enc.step_threshold {
             enc.anchor_count = enc.count;
             enc.direction = EncoderDirection::Negative;
             enc.last_move_ticks = now;
-        } else if now > (enc.last_move_ticks + ENCODER_MOVE_TIMEOUT_TICKS) {
+        } else if now > (enc.last_move_ticks + enc.move_timeout_ticks) {
             enc.direction = EncoderDirection::Stopped;
         }
     }
@@ -724,6 +745,16 @@ fn get_encoder_keys(encoders: &[EncoderState; NUM_ENCODERS]) -> [Keyboard; NUM_E
         }
     }
     key_report
+}
+
+/// Convert a u8 HID key code to `Option<Keyboard>`. A value of 0 means
+/// `NoEventIndicated` (i.e. no key mapped).
+pub fn u8_to_key(value: u8) -> Option<Keyboard> {
+    if value == 0 {
+        None
+    } else {
+        Some(Keyboard::from(value))
+    }
 }
 
 /// This function will encode the current button state of all buttons in the button array that
@@ -805,6 +836,43 @@ unsafe fn write_storage(storage: &FlashStoragePersistentMemory) {
 
     // Release the atomic guard
     FLASH_WRITE_IN_PROGRESS.store(false, Ordering::Release);
+}
+
+/// Erase the persistent storage region, restoring flash to an uninitialised state.
+/// On the next boot the device will detect fresh storage and re-write the defaults.
+///
+/// The erase size is calculated from `core::mem::size_of_val(storage)` so it
+/// automatically covers the full struct regardless of future growth.
+#[allow(dead_code)]
+unsafe fn clear_storage(storage: &FlashStoragePersistentMemory) {
+    // Atomic guard: if someone else is already writing, skip.
+    if FLASH_WRITE_IN_PROGRESS.swap(true, Ordering::AcqRel) {
+        info!("clear_storage: another write is already in progress, skipping.");
+        return;
+    }
+
+    const FLASH_SECTOR_SIZE: u32 = 4096;
+
+    let struct_size = core::mem::size_of_val(storage);
+    let erase_size =
+        ((struct_size as u32 + (FLASH_SECTOR_SIZE - 1)) / FLASH_SECTOR_SIZE) * FLASH_SECTOR_SIZE;
+
+    unsafe {
+        hal::rom_data::flash_range_erase(
+            FLASH_STORAGE_OFFSET,
+            erase_size as usize,
+            FLASH_SECTOR_SIZE,
+            0x20,
+        );
+    }
+
+    // Flush the XIP cache so subsequent reads see the erased (0xFF) state.
+    unsafe {
+        hal::rom_data::flash_flush_cache();
+    }
+
+    FLASH_WRITE_IN_PROGRESS.store(false, Ordering::Release);
+    info!("Persistent storage cleared. Next boot will re-initialise defaults.");
 }
 
 /// Program metadata for `picotool info`

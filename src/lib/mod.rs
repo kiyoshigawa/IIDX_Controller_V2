@@ -65,11 +65,11 @@ pub const CORE1_HEARTBEAT_RATE: u64 = 1_000_000 / 3;
 /// Min. time in ticks between LED strip refreshes (~144 Hz).
 pub const LED_FRAME_TICKS: u64 = 6_944;
 
-/// Minimum encoder delta before direction registers (hysteresis threshold).
-pub const ENCODER_STEP_THRESHOLD: i32 = 20;
+/// Default minimum encoder delta before direction registers (hysteresis threshold).
+pub const DEFAULT_ENCODER_STEP_THRESHOLD: i32 = 20;
 
-/// Timer ticks of inactivity before releasing the turntable key (100 ms).
-pub const ENCODER_MOVE_TIMEOUT_TICKS: u64 = 100_000;
+/// Default timer ticks of inactivity before releasing the turntable key (100 ms).
+pub const DEFAULT_ENCODER_MOVE_TIMEOUT_TICKS: u64 = 100_000;
 
 /// Idle timeout for encoder counts. If no input change occurs within this
 /// window, the device performs a system reset.
@@ -115,15 +115,187 @@ pub const FLASH_HEADER_INV: u32 = 0x5A5A5A5A;
 /// the cache flush completes.
 pub static FLASH_WRITE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
+/// Per-button configuration stored in flash.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ButtonConfig {
+    /// USB HID key code (0 = NoEventIndicated, meaning no key).
+    pub key: u8,
+    /// Debounce time in timer ticks (1,000,000 ticks per second).
+    pub debounce_ticks: u64,
+}
+
+/// Per-encoder configuration stored in flash.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct EncoderConfig {
+    /// USB HID key code for clockwise rotation.
+    pub key_up: u8,
+    /// USB HID key code for counter-clockwise rotation.
+    pub key_down: u8,
+    /// Debounce time in timer ticks.
+    pub debounce_ticks: u64,
+    /// Step threshold (hysteresis) for direction detection.
+    pub step_threshold: i32,
+    /// Timer ticks of inactivity before releasing the encoder key.
+    pub move_timeout_ticks: u64,
+}
+
+#[repr(C)]
 pub struct FlashStoragePersistentMemory {
     pub header: u32,
     pub header_inv: u32,
-    pub num_boots: u32,
+    pub buttons: [ButtonConfig; NUM_BUTTONS],
+    pub encoders: [EncoderConfig; NUM_ENCODERS],
 }
 
 impl FlashStoragePersistentMemory {
     pub fn has_been_written(&self) -> bool {
         self.header == FLASH_HEADER && self.header_inv == FLASH_HEADER_INV
+    }
+
+    pub fn default() -> Self {
+        // Build the button config array using the current default key mappings.
+        // key=0 means None (no key mapped); they are set explicitly below.
+        let mut buttons = [ButtonConfig {
+            key: 0,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; NUM_BUTTONS];
+
+        // Physical buttons with default key bindings
+        buttons[0] = ButtonConfig {
+            key: Keyboard::Z as u8,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; // P1_1
+        buttons[1] = ButtonConfig {
+            key: Keyboard::S as u8,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; // P1_2
+        buttons[2] = ButtonConfig {
+            key: Keyboard::X as u8,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; // P1_3
+        buttons[3] = ButtonConfig {
+            key: Keyboard::D as u8,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; // P1_4
+        buttons[4] = ButtonConfig {
+            key: Keyboard::C as u8,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; // P1_5
+        buttons[5] = ButtonConfig {
+            key: Keyboard::F as u8,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; // P1_6
+        buttons[6] = ButtonConfig {
+            key: Keyboard::V as u8,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; // P1_7
+        buttons[7] = ButtonConfig {
+            key: Keyboard::Grave as u8,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; // P1_Start
+        buttons[8] = ButtonConfig {
+            key: Keyboard::Keyboard1 as u8,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; // P1_Select
+        buttons[9] = ButtonConfig {
+            key: Keyboard::M as u8,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; // P2_1
+        buttons[10] = ButtonConfig {
+            key: Keyboard::K as u8,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; // P2_2
+        buttons[11] = ButtonConfig {
+            key: Keyboard::Comma as u8,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; // P2_3
+        buttons[12] = ButtonConfig {
+            key: Keyboard::L as u8,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; // P2_4
+        buttons[13] = ButtonConfig {
+            key: Keyboard::Dot as u8,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; // P2_5
+        buttons[14] = ButtonConfig {
+            key: Keyboard::Semicolon as u8,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; // P2_6
+        buttons[15] = ButtonConfig {
+            key: Keyboard::ForwardSlash as u8,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; // P2_7
+        buttons[16] = ButtonConfig {
+            key: Keyboard::DeleteBackspace as u8,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; // P2_Start
+        buttons[17] = ButtonConfig {
+            key: Keyboard::Equal as u8,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; // P2_Select
+        buttons[18] = ButtonConfig {
+            key: Keyboard::Escape as u8,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; // Escape
+        // Center-console buttons have no default USB key, but still need debounce ticks.
+        buttons[19] = ButtonConfig {
+            key: Keyboard::NoEventIndicated as u8,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; // CC_Up
+        buttons[20] = ButtonConfig {
+            key: Keyboard::NoEventIndicated as u8,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; // CC_Down
+        buttons[21] = ButtonConfig {
+            key: Keyboard::NoEventIndicated as u8,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; // CC_Left
+        buttons[22] = ButtonConfig {
+            key: Keyboard::NoEventIndicated as u8,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; // CC_Right
+        buttons[23] = ButtonConfig {
+            key: Keyboard::NoEventIndicated as u8,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; // CC_Select
+        buttons[24] = ButtonConfig {
+            key: Keyboard::VolumeUp as u8,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; // Volume_Up
+        buttons[25] = ButtonConfig {
+            key: Keyboard::VolumeDown as u8,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; // Volume_Down
+        buttons[26] = ButtonConfig {
+            key: Keyboard::Mute as u8,
+            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+        }; // Mute
+
+        let encoders = [
+            EncoderConfig {
+                key_up: Keyboard::LeftShift as u8,
+                key_down: Keyboard::LeftControl as u8,
+                debounce_ticks: DEFAULT_ENCODER_DEBOUNCE_TICKS,
+                step_threshold: DEFAULT_ENCODER_STEP_THRESHOLD,
+                move_timeout_ticks: DEFAULT_ENCODER_MOVE_TIMEOUT_TICKS,
+            },
+            EncoderConfig {
+                key_up: Keyboard::RightControl as u8,
+                key_down: Keyboard::RightShift as u8,
+                debounce_ticks: DEFAULT_ENCODER_DEBOUNCE_TICKS,
+                step_threshold: DEFAULT_ENCODER_STEP_THRESHOLD,
+                move_timeout_ticks: DEFAULT_ENCODER_MOVE_TIMEOUT_TICKS,
+            },
+        ];
+
+        Self {
+            header: FLASH_HEADER,
+            header_inv: FLASH_HEADER_INV,
+            buttons,
+            encoders,
+        }
     }
 }
 
@@ -222,19 +394,20 @@ pub struct ButtonState {
 }
 
 impl ButtonState {
-    /// Creates a new `ButtonState` with the default debounce ticks and
+    /// Creates a new `ButtonState` with the given debounce ticks and
     /// initial unpressed state.
     pub fn new(
         name: &'static str,
         pin: Pin<DynPinId, FunctionSioInput, PullDown>,
         key: Option<Keyboard>,
+        debounce_ticks: u64,
     ) -> Self {
         Self {
             name,
             pin,
             key,
             last_update_ticks: 0,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
+            debounce_ticks,
             is_pressed: false,
             was_pressed: false,
         }
@@ -250,7 +423,7 @@ pub struct EncoderState<'a> {
     pub key_down: Option<Keyboard>,
     pub count: i32,
     pub direction: EncoderDirection,
-    /// Last position that crossed [`ENCODER_STEP_THRESHOLD`]. Used as the
+    /// Last position that crossed the step threshold. Used as the
     /// comparison anchor for delta calculations.
     pub anchor_count: i32,
     /// Timer tick stamp of the last threshold-crossing event.
@@ -259,18 +432,25 @@ pub struct EncoderState<'a> {
     pub last_update_ticks: u64,
     /// Minimum ticks between accepting a new PIO sample.
     pub debounce_ticks: u64,
+    /// Minimum delta before direction registers (hysteresis threshold).
+    pub step_threshold: i32,
+    /// Timer ticks of inactivity before releasing the encoder key.
+    pub move_timeout_ticks: u64,
     /// Reference to this encoder's PIO Rx FIFO for reading raw counts.
     pub rx: &'a mut dyn PioRxReader,
 }
 
 impl<'a> EncoderState<'a> {
     /// Creates a new `EncoderState` with the given name, key bindings,
-    /// and PIO Rx FIFO reference. All tracking fields start at default values.
+    /// PIO Rx FIFO reference, and threshold values.
     pub fn new(
         name: &'static str,
         key_up: Option<Keyboard>,
         key_down: Option<Keyboard>,
         rx: &'a mut dyn PioRxReader,
+        debounce_ticks: u64,
+        step_threshold: i32,
+        move_timeout_ticks: u64,
     ) -> Self {
         Self {
             name,
@@ -281,7 +461,9 @@ impl<'a> EncoderState<'a> {
             direction: EncoderDirection::Stopped,
             last_move_ticks: 0,
             last_update_ticks: 0,
-            debounce_ticks: DEFAULT_ENCODER_DEBOUNCE_TICKS,
+            debounce_ticks,
+            step_threshold,
+            move_timeout_ticks,
             rx,
         }
     }
