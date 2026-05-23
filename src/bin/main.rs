@@ -79,6 +79,42 @@ fn main() -> ! {
     .ok()
     .unwrap();
 
+    // Read the flash memory into the data struct I made so we can use/change it as needed.
+    let storage: &FlashStoragePersistentMemory =
+        unsafe { &*(FLASH_STORAGE_BASE_ADDR as *const FlashStoragePersistentMemory) };
+
+    if storage.has_been_written() {
+        let current_boots = storage.num_boots;
+        info!("Storage has been initialized! Using persistent storage for settings values.");
+
+        let new_storage = FlashStoragePersistentMemory {
+            header: FLASH_HEADER,
+            header_inv: FLASH_HEADER_INV,
+            num_boots: current_boots.wrapping_add(1),
+        };
+
+        unsafe {
+            write_storage(&new_storage);
+        }
+        info!(
+            "Boot count incremented to: {}",
+            current_boots.wrapping_add(1)
+        );
+    } else {
+        info!("Storage is fresh / not initialized. Writing initial values using defaults...");
+
+        let storage = FlashStoragePersistentMemory {
+            header: FLASH_HEADER,
+            header_inv: FLASH_HEADER_INV,
+            num_boots: 1,
+        };
+
+        unsafe {
+            write_storage(&storage);
+        }
+        info!("Initial values written.");
+    }
+
     // Shared timer for timed tasks, counts at 1_000_000 ticks per second (or 1 tick per us if you prefer)
     let timer = hal::Timer::new_timer0(pac.TIMER0, &mut pac.RESETS, &clocks);
 
@@ -689,7 +725,7 @@ fn get_encoder_keys(encoders: &[EncoderState; NUM_ENCODERS]) -> [Keyboard; NUM_E
     key_report
 }
 
-/// This function will encode the current button state of all buttons in the button array that 
+/// This function will encode the current button state of all buttons in the button array that
 /// have a key mapped via the NKRO USB peripheral into an array that can be sent via USB as a keypress.
 fn get_keys(buttons: &[ButtonState]) -> [Keyboard; NUM_BUTTONS] {
     // default to taking no action, and only update keys being pressed:
@@ -702,6 +738,52 @@ fn get_keys(buttons: &[ButtonState]) -> [Keyboard; NUM_BUTTONS] {
         }
     }
     keyboard
+}
+
+/// Write the storage struct to flash.
+/// - FLASH_STORAGE_OFFSET must be 256-byte aligned for program, 4096 aligned for erase
+unsafe fn write_storage(storage: &FlashStoragePersistentMemory) {
+    const FLASH_PAGE_SIZE: usize = 256;
+    const FLASH_SECTOR_SIZE: usize = 4096;
+
+    let struct_size = core::mem::size_of::<FlashStoragePersistentMemory>();
+
+    // Step 1: Erase enough 4 KB sectors to cover the entire struct
+    // flash_range_erase(addr, count, block_size, block_cmd)
+    // block_size=4096, block_cmd=0x20 (sector erase command for most NOR flashes)
+    let erase_size =
+        ((struct_size + (FLASH_SECTOR_SIZE - 1)) / FLASH_SECTOR_SIZE) * FLASH_SECTOR_SIZE;
+    unsafe {
+        hal::rom_data::flash_range_erase(
+            FLASH_STORAGE_OFFSET,
+            erase_size,
+            FLASH_SECTOR_SIZE as u32,
+            0x20,
+        );
+    }
+
+    // Step 2: Build a byte slice view of the struct.
+    // FLASH_STORAGE_OFFSET is already 256-byte aligned (0x00F00000 & 0xFF == 0) ✓
+    let struct_bytes: &[u8] =
+        unsafe { core::slice::from_raw_parts(storage as *const _ as *const u8, struct_size) };
+
+    // Step 3: Program one 256-byte page at a time
+    // flash_range_program(addr, data_ptr, count) requires a 256-byte aligned
+    // address and a count that is a multiple of 256.
+    for (chunk_idx, chunk) in struct_bytes.chunks(FLASH_PAGE_SIZE).enumerate() {
+        let mut page_buf = [0xFFu8; FLASH_PAGE_SIZE];
+        page_buf[..chunk.len()].copy_from_slice(chunk);
+
+        let offset = FLASH_STORAGE_OFFSET + (chunk_idx * FLASH_PAGE_SIZE) as u32;
+        unsafe {
+            hal::rom_data::flash_range_program(offset, page_buf.as_ptr(), FLASH_PAGE_SIZE);
+        }
+    }
+
+    // Step 4: Flush the XIP cache so subsequent XIP reads see the new data
+    unsafe {
+        hal::rom_data::flash_flush_cache();
+    }
 }
 
 /// Program metadata for `picotool info`

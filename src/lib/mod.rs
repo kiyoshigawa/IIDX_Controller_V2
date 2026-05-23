@@ -23,6 +23,14 @@ pub type OledDisplay<D> = Ssd1306<D, DisplaySize128x64, BufferedGraphicsMode<Dis
 /// The frequency of the external clock crystal on the board (12 MHz).
 pub const EXTERNAL_XTAL_FREQ: u32 = 12_000_000;
 
+/// Address in memory of the flash storage dedicated to persistent memory on the chip
+/// Configured in memory.x as 'STORAGE'  -currently 1024K
+pub const FLASH_STORAGE_BASE_ADDR: u32 = 0x10F00000;
+
+/// Flash byte offset (relative to start of flash) for the storage region.
+/// FLASH_STORAGE_BASE_ADDR = 0x10F00000 => offset = 0x00F00000
+pub const FLASH_STORAGE_OFFSET: u32 = 0x00F00000;
+
 /// The number of GPIO pins being used as buttons (both keyboard and control center).
 /// If you go higher than 27, you need to update how the SIO FIFO sends work between cores,
 /// or the 31-27 bits will be eatn by the headers.
@@ -73,7 +81,7 @@ pub const SCREEN_REFRESH_TICKS: u64 = 100_000;
 pub const BUF_SIZE: usize = 16;
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Inter-core FIFO protocol headers
+// Inter-core FIFO protocol and flash storage headers
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Header for the current-button-state word sent from core0 to core1.
@@ -90,6 +98,28 @@ pub const ENCODER_P2_COUNT_HEADER: u32 = 0b10111;
 /// If you need more physical buttons form the spare pins, you can encode
 /// them in this u32, but you'll need to rework the SIO FIFO logic on both cores
 pub const ENCODER_DIRECTION_HEADER: u32 = 0b10101;
+
+/// Used to note when the persistent storage has been written. This u32 is the
+/// actual header and the second u32 is the bitwise inverse. Flash should erase to
+/// 0xFF for all bytes, so if it matches these values you know it has been initialized.
+pub const FLASH_HEADER: u32 = 0xA5A5A5A5;
+
+/// Used to note when the persistent storage has been written. First u32 is the
+/// actual header and the this u32 is the bitwise inverse. Flash should erase to
+/// 0xFF for all bytes, so if it matches these values you know it has been initialized.
+pub const FLASH_HEADER_INV: u32 = 0x5A5A5A5A;
+
+pub struct FlashStoragePersistentMemory {
+    pub header: u32,
+    pub header_inv: u32,
+    pub num_boots: u32,
+}
+
+impl FlashStoragePersistentMemory {
+    pub fn has_been_written(&self) -> bool {
+        self.header == FLASH_HEADER && self.header_inv == FLASH_HEADER_INV
+    }
+}
 
 /// Every input source has a unique code that doubles as a bit offset
 /// into the combined u64 state word on core1.  Physical button codes

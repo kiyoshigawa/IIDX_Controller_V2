@@ -114,8 +114,6 @@ pub(crate) const BUTTON_DEBUG_RECTANGLES: [Rectangle; NUM_BUTTONS] = [
 /// will be handled.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum MenuMode {
-    Idle,
-    TextMenu,
     Debug,
     PixelTest,
 }
@@ -240,8 +238,6 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 encoder_p2_count,
             ),
             MenuMode::PixelTest => self.print_pixel_test(),
-            MenuMode::Idle => {}
-            MenuMode::TextMenu => {}
         }
     }
 
