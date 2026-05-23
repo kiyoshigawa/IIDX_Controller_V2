@@ -5,6 +5,7 @@
 
 #![no_std]
 
+use core::sync::atomic::AtomicBool;
 use rp235x_hal::gpio::{DynPinId, FunctionSioInput, Pin, PullDown};
 use ssd1306::{Ssd1306, mode::BufferedGraphicsMode, prelude::*};
 use strum::EnumIter;
@@ -108,6 +109,11 @@ pub const FLASH_HEADER: u32 = 0xA5A5A5A5;
 /// actual header and the this u32 is the bitwise inverse. Flash should erase to
 /// 0xFF for all bytes, so if it matches these values you know it has been initialized.
 pub const FLASH_HEADER_INV: u32 = 0x5A5A5A5A;
+
+/// Atomic flag to prevent concurrent flash writes from both cores.
+/// Set to `true` before erasing/programming, cleared to `false` after
+/// the cache flush completes.
+pub static FLASH_WRITE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 pub struct FlashStoragePersistentMemory {
     pub header: u32,

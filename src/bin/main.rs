@@ -16,6 +16,7 @@
 #![no_std]
 #![no_main]
 
+use core::sync::atomic::Ordering;
 use defmt::info;
 use defmt_rtt as _;
 use embedded_hal::digital::*;
@@ -741,49 +742,69 @@ fn get_keys(buttons: &[ButtonState]) -> [Keyboard; NUM_BUTTONS] {
 }
 
 /// Write the storage struct to flash.
-/// - FLASH_STORAGE_OFFSET must be 256-byte aligned for program, 4096 aligned for erase
+/// FLASH_STORAGE_OFFSET must be 256-byte aligned for program, 4096 aligned for erase
+/// Uses an atomic guard (`FLASH_WRITE_IN_PROGRESS`) to prevent concurrent
+/// calls from both cores. If the guard is already claimed, the function logs
+/// a warning and returns immediately without writing.
 unsafe fn write_storage(storage: &FlashStoragePersistentMemory) {
-    const FLASH_PAGE_SIZE: usize = 256;
-    const FLASH_SECTOR_SIZE: usize = 4096;
+    // Atomic guard: if someone else is already writing, skip.
+    if FLASH_WRITE_IN_PROGRESS.swap(true, Ordering::AcqRel) {
+        info!("write_storage: another write is already in progress, skipping.");
+        return;
+    }
+
+    const FLASH_SECTOR_SIZE: u32 = 4096;
+    const FLASH_PAGE_SIZE: u32 = 256;
 
     let struct_size = core::mem::size_of::<FlashStoragePersistentMemory>();
+    let struct_ptr = storage as *const FlashStoragePersistentMemory as *const u8;
 
-    // Step 1: Erase enough 4 KB sectors to cover the entire struct
+    // Step 1: Erase enough 4 KB sectors to cover the entire struct.
     // flash_range_erase(addr, count, block_size, block_cmd)
     // block_size=4096, block_cmd=0x20 (sector erase command for most NOR flashes)
+    // Round struct_size up to the next 4 KB boundary.
     let erase_size =
-        ((struct_size + (FLASH_SECTOR_SIZE - 1)) / FLASH_SECTOR_SIZE) * FLASH_SECTOR_SIZE;
+        ((struct_size as u32 + (FLASH_SECTOR_SIZE - 1)) / FLASH_SECTOR_SIZE) * FLASH_SECTOR_SIZE;
     unsafe {
         hal::rom_data::flash_range_erase(
             FLASH_STORAGE_OFFSET,
-            erase_size,
-            FLASH_SECTOR_SIZE as u32,
+            erase_size as usize,
+            FLASH_SECTOR_SIZE,
             0x20,
         );
     }
 
-    // Step 2: Build a byte slice view of the struct.
-    // FLASH_STORAGE_OFFSET is already 256-byte aligned (0x00F00000 & 0xFF == 0) ✓
-    let struct_bytes: &[u8] =
-        unsafe { core::slice::from_raw_parts(storage as *const _ as *const u8, struct_size) };
-
-    // Step 3: Program one 256-byte page at a time
+    // Step 2: Program the struct data one 256-byte page at a time.
     // flash_range_program(addr, data_ptr, count) requires a 256-byte aligned
     // address and a count that is a multiple of 256.
-    for (chunk_idx, chunk) in struct_bytes.chunks(FLASH_PAGE_SIZE).enumerate() {
-        let mut page_buf = [0xFFu8; FLASH_PAGE_SIZE];
-        page_buf[..chunk.len()].copy_from_slice(chunk);
-
-        let offset = FLASH_STORAGE_OFFSET + (chunk_idx * FLASH_PAGE_SIZE) as u32;
+    let mut remaining = struct_size;
+    let mut src = struct_ptr;
+    let mut flash_offs = FLASH_STORAGE_OFFSET;
+    while remaining > 0 {
+        let mut page_buf = [0xFFu8; 256];
+        let chunk_len = core::cmp::min(remaining, FLASH_PAGE_SIZE as usize);
         unsafe {
-            hal::rom_data::flash_range_program(offset, page_buf.as_ptr(), FLASH_PAGE_SIZE);
+            core::ptr::copy_nonoverlapping(src, page_buf.as_mut_ptr(), chunk_len);
         }
+        unsafe {
+            hal::rom_data::flash_range_program(
+                flash_offs,
+                page_buf.as_ptr(),
+                FLASH_PAGE_SIZE as usize,
+            );
+        }
+        remaining -= chunk_len;
+        src = unsafe { src.add(chunk_len) };
+        flash_offs += FLASH_PAGE_SIZE;
     }
 
-    // Step 4: Flush the XIP cache so subsequent XIP reads see the new data
+    // Step 3: Flush the XIP cache so subsequent XIP reads see the new data.
     unsafe {
         hal::rom_data::flash_flush_cache();
     }
+
+    // Release the atomic guard
+    FLASH_WRITE_IN_PROGRESS.store(false, Ordering::Release);
 }
 
 /// Program metadata for `picotool info`
