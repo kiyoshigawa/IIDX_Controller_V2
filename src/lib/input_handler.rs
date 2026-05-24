@@ -17,7 +17,7 @@ pub(crate) enum ButtonEvents {
 }
 
 /// This will take data from the physical inputs that was passed through the SIO FIFO buffers
-/// from core0 to core1, then it will process that data to decide on which input states have 
+/// from core0 to core1, then it will process that data to decide on which input states have
 /// changed, and depending on what buttons changed and how, it will fire off event calls to
 /// other state machines like the LED Strip or MenuHelper
 pub struct InputHandler<'a, D> {
@@ -54,9 +54,10 @@ impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
     fn process_event(&mut self, event: ButtonEvents) {
         match event {
             ButtonEvents::Press(button) => {
+                debug!("btn: {} pressed", button as usize);
                 self.menu_handler.process_event(MenuEvents::Press(button));
             }
-            ButtonEvents::Release(button) => debug!("RELEASE! {}", button as usize),
+            ButtonEvents::Release(button) => debug!("btn: {} released", button as usize),
         };
     }
 

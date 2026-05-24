@@ -8,7 +8,6 @@ use crate::{
     BUF_SIZE, ButtonCode, DEFAULT_BUTTON_DEBOUNCE_TICKS, FlashStoragePersistentMemory, NUM_BUTTONS,
     OledDisplay,
 };
-use core::cmp::min;
 use core::fmt::Write;
 use defmt::debug;
 use display_interface::WriteOnlyDataCommand;
@@ -28,8 +27,26 @@ pub(crate) const BUTTON_GRAPHIC_ROW_HEIGHT: u8 = 36;
 /// Maximum number of menu levels that can be nested on the stack.
 const MAX_MENU_DEPTH: usize = 4;
 
-/// Highest standard HID keyboard usage code cycled through in key binding editing.
-const MAX_HID_KEY: usize = 101;
+/// Width of a single character in the FONT_9X18_BOLD font (pixels).
+const CHAR_W: i32 = 9;
+
+/// OLED display width in pixels.
+const DISPLAY_W: u32 = 128;
+
+/// Rightmost pixel column on the display.
+const DISPLAY_R: i32 = (DISPLAY_W - 1) as i32;
+
+/// All defined USB HID keyboard usage codes (0-231, skipping reserved range 165-223).
+const VALID_KEYS: &[u8] = &[
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+    26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49,
+    50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73,
+    74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97,
+    98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116,
+    117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135,
+    136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154,
+    155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 224, 225, 226, 227, 228, 229, 230, 231,
+];
 
 /// Visible character width of the OLED display with the 9px font.
 const VISIBLE_WIDTH: usize = 13;
@@ -42,7 +59,7 @@ const FRAME_COUNTER_POS: Point = Point::new(0, 0);
 /// Left-middle position for the encoder 1 count in debug screen
 const ENCODER1_LABEL_POS: Point = Point::new(0, 32);
 /// Right-middle position for the encoder 2 count in debug screen
-const ENCODER2_LABEL_POS: Point = Point::new(127, 32);
+const ENCODER2_LABEL_POS: Point = Point::new(DISPLAY_R, 32);
 
 /// These are the 'on' pixels used for the wiki arrow graphic in the debug screen.
 #[rustfmt::skip]
@@ -92,6 +109,21 @@ pub(crate) const BUTTON_GRAPHIC: [u8; 16 * 26] = [
     0b00000110, 0b00000000, 0b10001000, 0b10001000, 0b10001000, 0b10001000, 0b00000000, 0b00000100, 0b01000000, 0b00000000, 0b00010001, 0b00010001, 0b00010001, 0b00010001, 0b00000000, 0b01100000, // Row 24
     0b00011000, 0b00000000, 0b11111000, 0b11111000, 0b11111000, 0b11111000, 0b00000000, 0b00000100, 0b01000000, 0b00000000, 0b00011111, 0b00011111, 0b00011111, 0b00011111, 0b00000000, 0b00011000, // Row 25
     0b11100000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000111, 0b11000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000000, 0b00000111, // Row 26
+];
+
+/// Left-pointing back-arrow glyph for menu "Back" options.
+/// Pixels relative to the top-left of the glyph bounding box.
+#[rustfmt::skip]
+const BACK_ARROW_PIXELS: [(i32, i32); 48] = [
+                                                                                        (12,0),(13,0),
+                         ( 3,1),                                                        (12,1),(13,1),
+                  ( 2,2),( 3,2),                                                        (12,2),(13,2),
+           ( 1,3),( 2,3),( 3,3),                                                        (12,3),(13,3),
+    ( 0,4),( 1,4),( 2,4),( 3,4),( 4,4),( 5,4),( 6,4),( 7,4),( 8,4),( 9,4),(10,4),(11,4),(12,4),(13,4),
+    ( 0,5),( 1,5),( 2,5),( 3,5),( 4,5),( 5,5),( 6,5),( 7,5),( 8,5),( 9,5),(10,5),(11,5),(12,5),(13,5),
+           ( 1,6),( 2,6),( 3,6),
+                  ( 2,7),( 3,7),
+                         ( 3,8),
 ];
 
 /// Static rectangle coordinates for each physical button's debug-indicator position.
@@ -177,6 +209,8 @@ enum MenuAction {
     EditSetting(SettingKey),
     /// Enter key-binding cycle for a physical button or encoder direction.
     EditKeyBinding(ButtonCode),
+    /// Open the dedicated encoder-editing screen for wiki sensitivity.
+    OpenWikiEdit(usize),
     /// Visible but non-functional — reserved for future features.
     None,
 }
@@ -196,6 +230,15 @@ enum MenuSubState {
         working_key_idx: usize,
         original_key_idx: usize,
     },
+    WikiEdit {
+        encoder: usize,
+        selected: usize,
+        editing: bool,
+        working_threshold: u32,
+        working_timeout: u32,
+        original_threshold: u32,
+        original_timeout: u32,
+    },
     DisplayMode(MenuMode),
 }
 
@@ -209,6 +252,12 @@ fn flip_for(code: ButtonCode) -> Flip {
         ButtonCode::P2Negative => Flip::FlipXY,
         _ => Flip::NoFlip,
     }
+}
+
+/// Compact human-readable key name for a USB HID keyboard usage code (0-101).
+/// Returns the index of `key` within [`VALID_KEYS`].
+fn key_index(key: u8) -> usize {
+    VALID_KEYS.iter().position(|&k| k == key).unwrap_or(0)
 }
 
 static ROOT_MENU: MenuLevel = MenuLevel {
@@ -241,7 +290,7 @@ static SETTINGS_MENU: MenuLevel = MenuLevel {
             action: MenuAction::OpenSubmenu(&KEYBIND_MENU),
         },
         MenuOption {
-            label: "Encoder Sensitivity",
+            label: "Wiki Config",
             action: MenuAction::OpenSubmenu(&ENCODER_SENS_MENU),
         },
         MenuOption {
@@ -270,23 +319,15 @@ static DEBUG_MENU: MenuLevel = MenuLevel {
 };
 
 static ENCODER_SENS_MENU: MenuLevel = MenuLevel {
-    title: "Encoder Sens",
+    title: "Wiki Config",
     options: &[
         MenuOption {
-            label: "Enc1 Threshold",
-            action: MenuAction::EditSetting(SettingKey::EncoderStepThreshold(0)),
+            label: "P1 Wiki",
+            action: MenuAction::OpenWikiEdit(0),
         },
         MenuOption {
-            label: "Enc1 Timeout",
-            action: MenuAction::EditSetting(SettingKey::EncoderMoveTimeout(0)),
-        },
-        MenuOption {
-            label: "Enc2 Threshold",
-            action: MenuAction::EditSetting(SettingKey::EncoderStepThreshold(1)),
-        },
-        MenuOption {
-            label: "Enc2 Timeout",
-            action: MenuAction::EditSetting(SettingKey::EncoderMoveTimeout(1)),
+            label: "P2 Wiki",
+            action: MenuAction::OpenWikiEdit(1),
         },
         MenuOption {
             label: "Back",
@@ -335,7 +376,7 @@ static DEBOUNCE_MENU: MenuLevel = MenuLevel {
             action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::P1Start)),
         },
         MenuOption {
-            label: "P1Select",
+            label: "P1Sel",
             action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::P1Select)),
         },
         MenuOption {
@@ -371,7 +412,7 @@ static DEBOUNCE_MENU: MenuLevel = MenuLevel {
             action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::P2Start)),
         },
         MenuOption {
-            label: "P2Select",
+            label: "P2Sel",
             action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::P2Select)),
         },
         MenuOption {
@@ -395,15 +436,15 @@ static DEBOUNCE_MENU: MenuLevel = MenuLevel {
             action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::CcRight)),
         },
         MenuOption {
-            label: "CcSelect",
+            label: "CcSel",
             action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::CcSelect)),
         },
         MenuOption {
-            label: "VolumeUp",
+            label: "VolUp",
             action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::VolumeUp)),
         },
         MenuOption {
-            label: "VolumeDown",
+            label: "VolDn",
             action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::VolumeDown)),
         },
         MenuOption {
@@ -461,7 +502,7 @@ static KEYBIND_MENU: MenuLevel = MenuLevel {
             action: MenuAction::EditKeyBinding(ButtonCode::P1Start),
         },
         MenuOption {
-            label: "P1Select",
+            label: "P1Sel",
             action: MenuAction::EditKeyBinding(ButtonCode::P1Select),
         },
         MenuOption {
@@ -497,7 +538,7 @@ static KEYBIND_MENU: MenuLevel = MenuLevel {
             action: MenuAction::EditKeyBinding(ButtonCode::P2Start),
         },
         MenuOption {
-            label: "P2Select",
+            label: "P2Sel",
             action: MenuAction::EditKeyBinding(ButtonCode::P2Select),
         },
         MenuOption {
@@ -505,11 +546,11 @@ static KEYBIND_MENU: MenuLevel = MenuLevel {
             action: MenuAction::EditKeyBinding(ButtonCode::Escape),
         },
         MenuOption {
-            label: "VolumeUp",
+            label: "VolUp",
             action: MenuAction::EditKeyBinding(ButtonCode::VolumeUp),
         },
         MenuOption {
-            label: "VolumeDown",
+            label: "VolDn",
             action: MenuAction::EditKeyBinding(ButtonCode::VolumeDown),
         },
         MenuOption {
@@ -625,7 +666,7 @@ impl SettingKey {
                 min: 0,
                 max: 100,
                 divisor: 1,
-                unit: "",
+                unit: "Steps",
             },
             Self::EncoderMoveTimeout(_) => SettingMeta {
                 step: 5_000,
@@ -641,7 +682,10 @@ impl SettingKey {
 /// Drives the SSD1306 OLED display and menu logic for the IIDX deck.
 pub struct MenuHandler<'a, D> {
     pub display: &'a mut OledDisplay<D>,
-    line_bufs: [FmtBuf; 4],
+    debug_bufs: [FmtBuf; 4],
+    title_buf: FmtBuf,
+    label_bufs: [FmtBuf; 3],
+    value_bufs: [FmtBuf; 3],
     text_style: MonoTextStyle<'static, BinaryColor>,
     pub frames_rendered: u64,
     state: MenuSubState,
@@ -652,6 +696,8 @@ pub struct MenuHandler<'a, D> {
     pub settings: FlashStoragePersistentMemory,
     /// Independent value for "All" debounce — separate from any single button.
     all_debounce_value: u32,
+    /// Y position of the back-arrow glyph, if any option on screen has `GoBack`.
+    back_arrow_y: Option<i32>,
 }
 
 impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
@@ -667,7 +713,10 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
         });
         Self {
             display,
-            line_bufs: [FmtBuf::new(), FmtBuf::new(), FmtBuf::new(), FmtBuf::new()],
+            debug_bufs: [FmtBuf::new(), FmtBuf::new(), FmtBuf::new(), FmtBuf::new()],
+            title_buf: FmtBuf::new(),
+            label_bufs: [FmtBuf::new(), FmtBuf::new(), FmtBuf::new()],
+            value_bufs: [FmtBuf::new(), FmtBuf::new(), FmtBuf::new()],
             text_style,
             frames_rendered: 0,
             state: MenuSubState::Browsing,
@@ -675,30 +724,23 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             stack_depth: 1,
             settings,
             all_debounce_value: DEFAULT_BUTTON_DEBOUNCE_TICKS as u32,
+            back_arrow_y: None,
         }
     }
 
     pub fn process_event(&mut self, event: MenuEvents) {
         match event {
             MenuEvents::Press(button) => {
-                debug!(
-                    "MENU PRESS! {} ({})",
-                    button as usize,
-                    match self.state {
-                        MenuSubState::Browsing => "Browsing",
-                        MenuSubState::EditingValue { .. } => "EditingValue",
-                        MenuSubState::EditingKeyBinding { .. } => "EditingKeyBinding",
-                        MenuSubState::DisplayMode(_) => "DisplayMode",
-                    }
-                );
                 let current_state = self.state;
                 match current_state {
                     MenuSubState::DisplayMode(MenuMode::Debug) => {
                         if button == ButtonCode::CcSelect {
+                            debug!("menu: exit debug screen");
                             self.state = MenuSubState::Browsing;
                         }
                     }
                     MenuSubState::DisplayMode(MenuMode::PixelTest) => {
+                        debug!("menu: exit pixel test");
                         self.state = MenuSubState::Browsing;
                     }
                     MenuSubState::Browsing => {
@@ -706,14 +748,16 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                         let cursor = self.current_cursor();
                         match button {
                             ButtonCode::CcUp => {
-                                if cursor > 0 {
-                                    *self.current_cursor_mut() -= 1;
-                                }
+                                let len = level.options.len();
+                                let new_cursor = (cursor + len - 1) % len;
+                                debug!("menu: cursor up → {}", new_cursor);
+                                *self.current_cursor_mut() = new_cursor;
                             }
                             ButtonCode::CcDown => {
-                                if cursor + 1 < level.options.len() {
-                                    *self.current_cursor_mut() += 1;
-                                }
+                                let len = level.options.len();
+                                let new_cursor = (cursor + 1) % len;
+                                debug!("menu: cursor down → {}", new_cursor);
+                                *self.current_cursor_mut() = new_cursor;
                             }
                             ButtonCode::CcSelect | ButtonCode::CcRight => {
                                 self.execute_action(level.options[cursor].action);
@@ -731,11 +775,16 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                     } => {
                         let meta = setting.meta();
                         match button {
-                            ButtonCode::CcLeft => {
+                            ButtonCode::CcLeft | ButtonCode::CcDown => {
                                 let new_val = working_value
                                     .saturating_sub(meta.step)
                                     .clamp(meta.min, meta.max);
                                 if new_val != working_value {
+                                    debug!(
+                                        "menu: edit {}\u{2193} {}",
+                                        new_val / meta.divisor,
+                                        meta.unit
+                                    );
                                     self.state = MenuSubState::EditingValue {
                                         setting,
                                         original_value,
@@ -743,11 +792,16 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                                     };
                                 }
                             }
-                            ButtonCode::CcRight => {
+                            ButtonCode::CcRight | ButtonCode::CcUp => {
                                 let new_val = working_value
                                     .saturating_add(meta.step)
                                     .clamp(meta.min, meta.max);
                                 if new_val != working_value {
+                                    debug!(
+                                        "menu: edit {}\u{2191} {}",
+                                        new_val / meta.divisor,
+                                        meta.unit
+                                    );
                                     self.state = MenuSubState::EditingValue {
                                         setting,
                                         original_value,
@@ -756,6 +810,11 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                                 }
                             }
                             ButtonCode::CcSelect => {
+                                debug!(
+                                    "menu: commit {} {}",
+                                    working_value / meta.divisor,
+                                    meta.unit
+                                );
                                 self.write_setting(setting, working_value);
                                 self.state = MenuSubState::Browsing;
                             }
@@ -767,16 +826,20 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                         working_key_idx,
                         original_key_idx,
                     } => match button {
-                        ButtonCode::CcLeft => {
-                            let new_idx = working_key_idx.saturating_sub(1);
+                        ButtonCode::CcLeft | ButtonCode::CcDown => {
+                            let count = VALID_KEYS.len();
+                            let new_idx = (working_key_idx + count - 1) % count;
+                            debug!("menu: key bind ← {}", VALID_KEYS[new_idx]);
                             self.state = MenuSubState::EditingKeyBinding {
                                 button: bind_button,
                                 working_key_idx: new_idx,
                                 original_key_idx,
                             };
                         }
-                        ButtonCode::CcRight => {
-                            let new_idx = min(working_key_idx + 1, MAX_HID_KEY);
+                        ButtonCode::CcRight | ButtonCode::CcUp => {
+                            let count = VALID_KEYS.len();
+                            let new_idx = (working_key_idx + 1) % count;
+                            debug!("menu: key bind → {}", VALID_KEYS[new_idx]);
                             self.state = MenuSubState::EditingKeyBinding {
                                 button: bind_button,
                                 working_key_idx: new_idx,
@@ -784,11 +847,141 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                             };
                         }
                         ButtonCode::CcSelect => {
-                            self.write_key_binding(bind_button, working_key_idx as u8);
+                            let key = VALID_KEYS[working_key_idx];
+                            debug!("menu: bind commit {}", key);
+                            self.write_key_binding(bind_button, key);
                             self.state = MenuSubState::Browsing;
                         }
                         _ => {}
                     },
+                    MenuSubState::WikiEdit {
+                        encoder,
+                        selected,
+                        editing,
+                        working_threshold,
+                        working_timeout,
+                        original_threshold,
+                        original_timeout,
+                    } => {
+                        if editing {
+                            let val = if selected == 0 {
+                                working_threshold
+                            } else {
+                                working_timeout
+                            };
+                            let key = if selected == 0 {
+                                SettingKey::EncoderStepThreshold(encoder)
+                            } else {
+                                SettingKey::EncoderMoveTimeout(encoder)
+                            };
+                            let meta = key.meta();
+                            match button {
+                                ButtonCode::CcLeft | ButtonCode::CcDown => {
+                                    let new_val =
+                                        val.saturating_sub(meta.step).clamp(meta.min, meta.max);
+                                    if selected == 0 {
+                                        self.state = MenuSubState::WikiEdit {
+                                            encoder,
+                                            selected,
+                                            editing: true,
+                                            working_threshold: new_val,
+                                            working_timeout,
+                                            original_threshold,
+                                            original_timeout,
+                                        };
+                                    } else {
+                                        self.state = MenuSubState::WikiEdit {
+                                            encoder,
+                                            selected,
+                                            editing: true,
+                                            working_threshold,
+                                            working_timeout: new_val,
+                                            original_threshold,
+                                            original_timeout,
+                                        };
+                                    }
+                                }
+                                ButtonCode::CcRight | ButtonCode::CcUp => {
+                                    let new_val =
+                                        val.saturating_add(meta.step).clamp(meta.min, meta.max);
+                                    if selected == 0 {
+                                        self.state = MenuSubState::WikiEdit {
+                                            encoder,
+                                            selected,
+                                            editing: true,
+                                            working_threshold: new_val,
+                                            working_timeout,
+                                            original_threshold,
+                                            original_timeout,
+                                        };
+                                    } else {
+                                        self.state = MenuSubState::WikiEdit {
+                                            encoder,
+                                            selected,
+                                            editing: true,
+                                            working_threshold,
+                                            working_timeout: new_val,
+                                            original_threshold,
+                                            original_timeout,
+                                        };
+                                    }
+                                }
+                                ButtonCode::CcSelect => {
+                                    let sk = SettingKey::EncoderStepThreshold(encoder);
+                                    self.write_setting(sk, working_threshold);
+                                    let sk = SettingKey::EncoderMoveTimeout(encoder);
+                                    self.write_setting(sk, working_timeout);
+                                    debug!("menu: wiki commit");
+                                    self.state = MenuSubState::WikiEdit {
+                                        encoder,
+                                        selected,
+                                        editing: false,
+                                        working_threshold,
+                                        working_timeout,
+                                        original_threshold,
+                                        original_timeout,
+                                    };
+                                }
+                                _ => {}
+                            }
+                        } else {
+                            match button {
+                                ButtonCode::CcUp | ButtonCode::CcDown => {
+                                    let new_sel = (selected + 1) % 2;
+                                    debug!(
+                                        "menu: wiki select {}",
+                                        if new_sel == 0 { "threshold" } else { "timeout" }
+                                    );
+                                    self.state = MenuSubState::WikiEdit {
+                                        encoder,
+                                        selected: new_sel,
+                                        editing: false,
+                                        working_threshold,
+                                        working_timeout,
+                                        original_threshold,
+                                        original_timeout,
+                                    };
+                                }
+                                ButtonCode::CcSelect | ButtonCode::CcRight => {
+                                    debug!("menu: wiki edit start");
+                                    self.state = MenuSubState::WikiEdit {
+                                        encoder,
+                                        selected,
+                                        editing: true,
+                                        working_threshold,
+                                        working_timeout,
+                                        original_threshold,
+                                        original_timeout,
+                                    };
+                                }
+                                ButtonCode::CcLeft => {
+                                    debug!("menu: wiki exit");
+                                    self.state = MenuSubState::Browsing;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -809,7 +1002,12 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             ),
             MenuSubState::DisplayMode(MenuMode::PixelTest) => self.print_pixel_test(),
             MenuSubState::Browsing => {
-                for line in &mut self.line_bufs {
+                self.back_arrow_y = None;
+                self.title_buf.reset();
+                for line in &mut self.label_bufs {
+                    line.reset();
+                }
+                for line in &mut self.value_bufs {
                     line.reset();
                 }
                 self.render_browsing();
@@ -820,40 +1018,48 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 working_value,
                 ..
             } => {
-                for line in &mut self.line_bufs {
+                self.back_arrow_y = None;
+                self.title_buf.reset();
+                for line in &mut self.label_bufs {
+                    line.reset();
+                }
+                for line in &mut self.value_bufs {
                     line.reset();
                 }
                 self.render_editing_value(setting, working_value);
-                let cursor = self.current_cursor();
-                let len = self.current_level().options.len();
-                let hl = if cursor == 0 {
-                    1
-                } else if cursor == len - 1 {
-                    3
-                } else {
-                    2
-                };
-                self.draw_menu_text(Some(hl));
+                self.draw_menu_text(Some(2));
             }
             MenuSubState::EditingKeyBinding {
                 button,
                 working_key_idx,
                 ..
             } => {
-                for line in &mut self.line_bufs {
+                self.back_arrow_y = None;
+                self.title_buf.reset();
+                for line in &mut self.label_bufs {
+                    line.reset();
+                }
+                for line in &mut self.value_bufs {
                     line.reset();
                 }
                 self.render_editing_keybinding(button, working_key_idx);
-                let cursor = self.current_cursor();
-                let len = self.current_level().options.len();
-                let hl = if cursor == 0 {
-                    1
-                } else if cursor == len - 1 {
-                    3
-                } else {
-                    2
-                };
-                self.draw_menu_text(Some(hl));
+                self.draw_menu_text(Some(2));
+            }
+            MenuSubState::WikiEdit {
+                encoder,
+                selected,
+                editing,
+                working_threshold,
+                working_timeout,
+                ..
+            } => {
+                self.render_wiki_edit(
+                    encoder,
+                    selected,
+                    editing,
+                    working_threshold,
+                    working_timeout,
+                );
             }
         }
     }
@@ -864,20 +1070,20 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
         encoder_p1_count: i32,
         encoder_p2_count: i32,
     ) {
-        for line in &mut self.line_bufs {
+        for line in &mut self.debug_bufs {
             line.reset();
         }
-        write!(self.line_bufs[0], "fc: {}", self.frames_rendered).unwrap();
-        write!(self.line_bufs[1], "{}", encoder_p1_count).unwrap();
-        write!(self.line_bufs[2], "{}", encoder_p2_count).unwrap();
-        write!(self.line_bufs[3], "Not used").unwrap();
+        write!(self.debug_bufs[0], "fc: {}", self.frames_rendered).unwrap();
+        write!(self.debug_bufs[1], "{}", encoder_p1_count).unwrap();
+        write!(self.debug_bufs[2], "{}", encoder_p2_count).unwrap();
+        write!(self.debug_bufs[3], "Not used").unwrap();
 
         let color = embedded_graphics::pixelcolor::BinaryColor::Off;
         self.display.clear(color).unwrap();
 
         // Frame counter (top-left)
         Text::with_baseline(
-            self.line_bufs[0].as_str(),
+            self.debug_bufs[0].as_str(),
             FRAME_COUNTER_POS,
             self.text_style,
             Baseline::Top,
@@ -887,7 +1093,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
 
         // Encoder 1 (left-middle)
         Text::with_alignment(
-            self.line_bufs[1].as_str(),
+            self.debug_bufs[1].as_str(),
             ENCODER1_LABEL_POS,
             self.text_style,
             Alignment::Left,
@@ -897,7 +1103,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
 
         // Encoder 2 (right-middle)
         Text::with_alignment(
-            self.line_bufs[2].as_str(),
+            self.debug_bufs[2].as_str(),
             ENCODER2_LABEL_POS,
             self.text_style,
             Alignment::Right,
@@ -917,7 +1123,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
 
     /// Draws the base IIDX button-layout image from [`BUTTON_GRAPHIC`].
     fn draw_empty_button_graphic(&mut self) {
-        let raw = ImageRaw::<BinaryColor>::new(&BUTTON_GRAPHIC, 128);
+        let raw = ImageRaw::<BinaryColor>::new(&BUTTON_GRAPHIC, DISPLAY_W);
         let image = Image::new(&raw, Point::new(0, BUTTON_GRAPHIC_ROW_HEIGHT as i32));
         image.draw(self.display).unwrap();
     }
@@ -982,26 +1188,96 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
         self.display.flush().unwrap();
     }
 
-    // ── Menu rendering ──
-
-    /// Writes one menu line: prefix + label[ + " " + value_suffix].
-    /// Label is truncated so the full line fits within VISIBLE_WIDTH.
-    fn write_menu_line(buf: &mut FmtBuf, selected: bool, label: &str, value_suffix: Option<&str>) {
-        buf.reset();
-        let prefix = if selected { ">" } else { " " };
-        let suffix_total = value_suffix.map_or(0, |s| 1 + s.as_bytes().len());
-        let max_label = (VISIBLE_WIDTH as isize) - 1 - (suffix_total as isize);
-        let max_label = if max_label < 0 { 0 } else { max_label as usize };
-        let label = if label.as_bytes().len() > max_label {
-            &label[..max_label]
-        } else {
-            label
-        };
-        write!(buf, "{}{}", prefix, label).unwrap();
-        if let Some(suffix) = value_suffix {
-            write!(buf, " {}", suffix).unwrap();
+    /// Renders the dedicated wiki-edit screen: two parameters displayed vertically
+    /// with labels on even lines and indented values on odd lines.
+    fn render_wiki_edit(
+        &mut self,
+        encoder: usize,
+        selected: usize,
+        editing: bool,
+        working_threshold: u32,
+        working_timeout: u32,
+    ) {
+        for buf in &mut self.debug_bufs {
+            buf.reset();
         }
+        for buf in &mut self.value_bufs {
+            buf.reset();
+        }
+
+        let t_meta = SettingKey::EncoderStepThreshold(0).meta();
+        let m_meta = SettingKey::EncoderMoveTimeout(0).meta();
+        let t_val = working_threshold / t_meta.divisor;
+        let m_val = working_timeout / m_meta.divisor;
+
+        // Labels on debug_bufs (left-aligned, odd line indices)
+        write!(
+            self.debug_bufs[0],
+            "{}P{} Threshold",
+            if selected == 0 { ">" } else { " " },
+            encoder + 1
+        )
+        .unwrap();
+        write!(
+            self.debug_bufs[2],
+            "{}P{} Timeout",
+            if selected == 1 { ">" } else { " " },
+            encoder + 1
+        )
+        .unwrap();
+
+        // Values on value_bufs (right-aligned, even line indices)
+        write!(self.value_bufs[0], "{} {}", t_val, t_meta.unit).unwrap();
+        write!(self.value_bufs[1], "{} {}", m_val, m_meta.unit).unwrap();
+
+        // Draw
+        let color = embedded_graphics::pixelcolor::BinaryColor::Off;
+        self.display.clear(color).unwrap();
+
+        for (i, y) in [(0usize, 0usize), (2, 2)] {
+            let s = self.debug_bufs[i].as_str();
+            if !s.is_empty() {
+                Text::with_baseline(s, Point::new(0, LINE_Y[y]), self.text_style, Baseline::Top)
+                    .draw(self.display)
+                    .unwrap();
+            }
+        }
+
+        for (vi, ly) in [(0usize, 1usize), (1, 3)] {
+            let v = self.value_bufs[vi].as_str();
+            if !v.is_empty() {
+                let mut text = Text::with_alignment(
+                    v,
+                    Point::new(124, LINE_Y[ly]),
+                    self.text_style,
+                    Alignment::Right,
+                );
+                text.text_style.baseline = Baseline::Top;
+                text.draw(self.display).unwrap();
+            }
+        }
+
+        if editing {
+            let value_idx = if selected == 0 { 0 } else { 1 };
+            let v = self.value_bufs[value_idx].as_str();
+            let vlen = v.as_bytes().len();
+            // Box from pixel 127 to 2px left of the value's first character
+            let box_left = 123 - (vlen as i32 * CHAR_W);
+            let box_left = if box_left < 0 { 0 } else { box_left };
+            let target_line = if selected == 0 { 1 } else { 3 };
+            Rectangle::new(
+                Point::new(box_left, LINE_Y[target_line]),
+                Size::new((DISPLAY_R - box_left) as u32, 16),
+            )
+            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+            .draw(self.display)
+            .unwrap();
+        }
+
+        self.display.flush().unwrap();
     }
+
+    // ── Menu rendering ──
 
     /// Writes a value string into `buf` for the given option.
     /// Uses `override_val` when in edit mode so the live working value is shown.
@@ -1027,30 +1303,102 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 let key = override_val
                     .map(|v| v as u8)
                     .unwrap_or_else(|| self.read_key_binding(code));
-                let hi = core::char::from_digit((key as usize >> 4) as u32, 16).unwrap_or('0');
-                let lo = core::char::from_digit((key as usize & 0xF) as u32, 16).unwrap_or('0');
-                write!(buf, "0x{}{}", hi, lo).unwrap();
+                // Use the library's Debug name, overriding only long ones
+                match key {
+                    0 => write!(buf, "No Key"),
+                    1 => write!(buf, "ErrRO"),
+                    2 => write!(buf, "POST"),
+                    3 => write!(buf, "Err"),
+                    30..=39 => {
+                        let digit = if key == 39 { 0 } else { key - 30 + 1 };
+                        write!(buf, "K{}", digit)
+                    }
+                    40 => write!(buf, "Enter"),
+                    42 => write!(buf, "BkSpc"),
+                    47 => write!(buf, "{{"),
+                    48 => write!(buf, "}}"),
+                    49 => write!(buf, "\\"),
+                    50 => write!(buf, "#"),
+                    51 => write!(buf, ";"),
+                    52 => write!(buf, "'"),
+                    56 => write!(buf, "/"),
+                    57 => write!(buf, "Caps"),
+                    70 => write!(buf, "PrtSc"),
+                    71 => write!(buf, "ScrLk"),
+                    75 => write!(buf, "PgUp"),
+                    76 => write!(buf, "Del"),
+                    78 => write!(buf, "PgDn"),
+                    79 => write!(buf, "RArr"),
+                    80 => write!(buf, "LArr"),
+                    81 => write!(buf, "DArr"),
+                    82 => write!(buf, "UArr"),
+                    83 => write!(buf, "NLck"),
+                    84 => write!(buf, "Kp/"),
+                    85 => write!(buf, "Kp*"),
+                    86 => write!(buf, "Kp-"),
+                    87 => write!(buf, "Kp+"),
+                    88 => write!(buf, "KEnt"),
+                    89..=97 => write!(buf, "Kp{}", key - 88),
+                    98 => write!(buf, "Kp0"),
+                    99 => write!(buf, "Kp."),
+                    100 => write!(buf, "NUS\\"),
+                    101 => write!(buf, "App"),
+                    103 => write!(buf, "KpEq"),
+                    127 => write!(buf, "Mute"),
+                    128 => write!(buf, "VolUp"),
+                    129 => write!(buf, "VolDn"),
+                    130 => write!(buf, "LCaps"),
+                    131 => write!(buf, "LNumL"),
+                    132 => write!(buf, "LScrL"),
+                    133 => write!(buf, "KpCom"),
+                    134 => write!(buf, "KpEqS"),
+                    153 => write!(buf, "AltEr"),
+                    154 => write!(buf, "SysRq"),
+                    159 => write!(buf, "Sep"),
+                    162 => write!(buf, "ClrAg"),
+                    163 => write!(buf, "Props"),
+                    224 => write!(buf, "LCTRL"),
+                    225 => write!(buf, "LSHFT"),
+                    226 => write!(buf, "LALT"),
+                    227 => write!(buf, "LGUI"),
+                    228 => write!(buf, "RCTRL"),
+                    229 => write!(buf, "RSHFT"),
+                    230 => write!(buf, "RALT"),
+                    231 => write!(buf, "RGUI"),
+                    _ => write!(
+                        buf,
+                        "{:?}",
+                        usbd_human_interface_device::page::Keyboard::from(key)
+                    ),
+                }
+                .unwrap();
                 true
             }
             _ => false,
         }
     }
 
-    /// Helper: renders the 3 visible option lines (lines 1–3) based on cursor position.
-    /// `override_val` is `Some` on the selected line during editing to show the live value.
+    /// Renders the 3 visible option lines — cursor always on the middle line (li=1),
+    /// with prev/next wrapping around when there are at least 3 options.
     fn render_options(&mut self, override_val: Option<u32>) {
         let level = self.current_level();
         let cursor = self.current_cursor();
         let len = level.options.len();
+        let prev = (cursor + len - 1) % len;
+        let next = (cursor + 1) % len;
 
-        let lines: [(usize, usize, bool); 3] = match cursor {
-            0 => [(1, 0, true), (2, 1, false), (3, 2, false)],
-            c if c == len - 1 => [
-                (1, c.saturating_sub(2), false),
-                (2, c.saturating_sub(1), false),
-                (3, c, true),
-            ],
-            c => [(1, c - 1, false), (2, c, true), (3, c + 1, false)],
+        let lines: [(usize, usize, bool); 3] = if len >= 3 {
+            [(1, prev, false), (2, cursor, true), (3, next, false)]
+        } else if len == 2 {
+            // Show the "other" option below when at top, above when at bottom
+            if cursor == 0 {
+                [(2, 0, true), (3, 1, false), (1, usize::MAX, false)]
+            } else {
+                [(1, 0, false), (2, 1, true), (3, usize::MAX, false)]
+            }
+        } else {
+            // len == 1 — only the cursor line
+            [(2, 0, true), (1, usize::MAX, false), (3, usize::MAX, false)]
         };
 
         for &(buf_idx, opt_idx, selected) in &lines {
@@ -1058,58 +1406,132 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 continue;
             }
             let option = &level.options[opt_idx];
-            let mut value_buf = FmtBuf::new();
-            let vo = if selected { override_val } else { None };
-            let has_value = self.write_option_value(option, &mut value_buf, vo);
-            let suffix = if has_value {
-                Some(value_buf.as_str())
+            let li = buf_idx - 1; // label/value index (0-based)
+
+            // Write label with prefix
+            let prefix = if selected { ">" } else { " " };
+            if matches!(option.action, MenuAction::GoBack) {
+                // Back arrow — write only the selection prefix
+                write!(self.label_bufs[li], "{}", prefix).unwrap();
+                self.back_arrow_y = Some(LINE_Y[buf_idx]);
             } else {
-                None
-            };
-            Self::write_menu_line(&mut self.line_bufs[buf_idx], selected, option.label, suffix);
+                // Normal label
+                let max_label = VISIBLE_WIDTH - 1;
+                let label = if option.label.as_bytes().len() > max_label {
+                    &option.label[..max_label]
+                } else {
+                    option.label
+                };
+                write!(self.label_bufs[li], "{}{}", prefix, label).unwrap();
+
+                // Write value into a temp buffer, then copy to value_bufs
+                let mut temp = FmtBuf::new();
+                let vo = if selected { override_val } else { None };
+                if self.write_option_value(option, &mut temp, vo) {
+                    self.value_bufs[li].reset();
+                    write!(self.value_bufs[li], "{}", temp.as_str()).unwrap();
+                }
+            }
         }
     }
 
     fn render_browsing(&mut self) {
-        write!(self.line_bufs[0], "{}", self.current_level().title).unwrap();
+        write!(self.title_buf, "{}", self.current_level().title).unwrap();
         self.render_options(None);
     }
 
     fn render_editing_value(&mut self, _setting: SettingKey, working_value: u32) {
-        write!(self.line_bufs[0], "{}", self.current_level().title).unwrap();
+        write!(self.title_buf, "{}", self.current_level().title).unwrap();
         self.render_options(Some(working_value));
     }
 
     fn render_editing_keybinding(&mut self, _button: ButtonCode, working_key_idx: usize) {
-        write!(self.line_bufs[0], "{}", self.current_level().title).unwrap();
-        self.render_options(Some(working_key_idx as u32));
+        write!(self.title_buf, "{}", self.current_level().title).unwrap();
+        // Convert array index back to actual key code for the override
+        let key = VALID_KEYS[working_key_idx] as u32;
+        self.render_options(Some(key));
     }
 
-    /// Draws the 4 FmtBuf lines to the OLED, a separator below the title,
-    /// and optionally a highlighted box around one line (for edit mode).
+    /// Draws title (left), labels (left), values (right), highlight box, and separator.
     fn draw_menu_text(&mut self, highlight_line: Option<usize>) {
         let color = embedded_graphics::pixelcolor::BinaryColor::Off;
         self.display.clear(color).unwrap();
 
-        for i in 0..4 {
-            let s = self.line_bufs[i].as_str();
+        // Title — left-aligned
+        let title = self.title_buf.as_str();
+        if !title.is_empty() {
+            Text::with_baseline(
+                title,
+                Point::new(0, LINE_Y[0]),
+                self.text_style,
+                Baseline::Top,
+            )
+            .draw(self.display)
+            .unwrap();
+        }
+
+        // Option labels — left-aligned on lines 1–3
+        for i in 0..3 {
+            let s = self.label_bufs[i].as_str();
             if !s.is_empty() {
-                Text::with_baseline(s, Point::new(0, LINE_Y[i]), self.text_style, Baseline::Top)
-                    .draw(self.display)
-                    .unwrap();
+                Text::with_baseline(
+                    s,
+                    Point::new(0, LINE_Y[i + 1]),
+                    self.text_style,
+                    Baseline::Top,
+                )
+                .draw(self.display)
+                .unwrap();
+            }
+            // Values — right-aligned on lines 1–3
+            let v = self.value_bufs[i].as_str();
+            if !v.is_empty() {
+                let mut text = Text::with_alignment(
+                    v,
+                    Point::new(124, LINE_Y[i + 1]),
+                    self.text_style,
+                    Alignment::Right,
+                );
+                text.text_style.baseline = Baseline::Top;
+                text.draw(self.display).unwrap();
             }
         }
 
         if let Some(line) = highlight_line {
-            Rectangle::new(Point::new(0, LINE_Y[line]), Size::new(128, 18))
-                .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-                .draw(self.display)
-                .unwrap();
+            let v = self.value_bufs[line - 1].as_str();
+            let value_len = v.as_bytes().len();
+            // Box from pixel 127 to 2px left of the value's first character
+            let box_left = 123 - (value_len as i32 * CHAR_W);
+            let box_left = if box_left < 0 { 0 } else { box_left };
+            Rectangle::new(
+                Point::new(box_left, LINE_Y[line] + 1),
+                Size::new((DISPLAY_R - box_left) as u32, 16),
+            )
+            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+            .draw(self.display)
+            .unwrap();
+        }
+
+        if let Some(y) = self.back_arrow_y {
+            for &(dx, dy) in &BACK_ARROW_PIXELS {
+                Pixel(Point::new(CHAR_W + dx, y + dy + 6), BinaryColor::On)
+                    .draw(self.display)
+                    .unwrap();
+            }
+            // "Back" label 3 px right of the arrow's right edge
+            Text::with_baseline(
+                "Back",
+                Point::new(CHAR_W + 14 + 3, y),
+                self.text_style,
+                Baseline::Top,
+            )
+            .draw(self.display)
+            .unwrap();
         }
 
         Line::new(
-            Point::new(0, LINE_Y[0] + 18),
-            Point::new(127, LINE_Y[0] + 18),
+            Point::new(0, LINE_Y[0] + 16),
+            Point::new(DISPLAY_R, LINE_Y[0] + 16),
         )
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
         .draw(self.display)
@@ -1122,15 +1544,26 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
 
     fn execute_action(&mut self, action: MenuAction) {
         match action {
-            MenuAction::OpenSubmenu(level) => self.push_level(level),
-            MenuAction::GoBack => self.pop_level(),
+            MenuAction::OpenSubmenu(level) => {
+                debug!("menu: enter {}", level.title);
+                self.push_level(level);
+            }
+            MenuAction::GoBack => {
+                debug!("menu: back");
+                self.pop_level();
+            }
             MenuAction::None => {}
-            MenuAction::ShowDebugScreen => self.state = MenuSubState::DisplayMode(MenuMode::Debug),
+            MenuAction::ShowDebugScreen => {
+                debug!("menu: debug screen");
+                self.state = MenuSubState::DisplayMode(MenuMode::Debug);
+            }
             MenuAction::ShowPixelTest => {
-                self.state = MenuSubState::DisplayMode(MenuMode::PixelTest)
+                debug!("menu: pixel test");
+                self.state = MenuSubState::DisplayMode(MenuMode::PixelTest);
             }
             MenuAction::EditSetting(key) => {
                 let value = self.read_setting(key);
+                debug!("menu: edit setting");
                 self.state = MenuSubState::EditingValue {
                     setting: key,
                     original_value: value,
@@ -1139,10 +1572,26 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             }
             MenuAction::EditKeyBinding(code) => {
                 let key = self.read_key_binding(code);
+                let idx = key_index(key);
+                debug!("menu: edit key bind");
                 self.state = MenuSubState::EditingKeyBinding {
                     button: code,
-                    working_key_idx: key as usize,
-                    original_key_idx: key as usize,
+                    working_key_idx: idx,
+                    original_key_idx: idx,
+                };
+            }
+            MenuAction::OpenWikiEdit(encoder) => {
+                let t_val = self.read_setting(SettingKey::EncoderStepThreshold(encoder));
+                let m_val = self.read_setting(SettingKey::EncoderMoveTimeout(encoder));
+                debug!("menu: wiki edit P{}", encoder + 1);
+                self.state = MenuSubState::WikiEdit {
+                    encoder,
+                    selected: 0,
+                    editing: false,
+                    working_threshold: t_val,
+                    working_timeout: m_val,
+                    original_threshold: t_val,
+                    original_timeout: m_val,
                 };
             }
         }
