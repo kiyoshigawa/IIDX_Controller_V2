@@ -6,7 +6,7 @@
 
 use crate::{
     BUF_SIZE, ButtonCode, DEFAULT_BUTTON_DEBOUNCE_TICKS, FlashStoragePersistentMemory, NUM_BUTTONS,
-    OledDisplay,
+    NUM_ENCODERS, OledDisplay,
 };
 use core::fmt::Write;
 use core::sync::atomic::Ordering;
@@ -225,6 +225,12 @@ enum MenuAction {
     PerformReset,
     /// Reboot the chip without saving or clearing settings.
     Reboot,
+    /// Show a list of all settings that differ from factory defaults.
+    ShowCustom,
+    /// Internal — return to the `ShowCustom` menu (no-op for prompts).
+    ReturnToCustom,
+    /// Internal — reset one specific field to its default value.
+    ResetField(usize),
     /// Visible but non-functional
     None,
 }
@@ -276,6 +282,10 @@ enum MenuSubState {
         choices: [PromptChoice; 2],
         selection: PromptSide,
     },
+    /// Scrollable list of settings that differ from factory defaults.
+    ShowCustom {
+        cursor: usize,
+    },
 }
 
 /// Returns the [`Flip`] orientation required for a given encoder
@@ -294,6 +304,36 @@ fn flip_for(code: ButtonCode) -> Flip {
 /// Returns the index of `key` within [`VALID_KEYS`].
 fn key_index(key: u8) -> usize {
     VALID_KEYS.iter().position(|&k| k == key).unwrap_or(0)
+}
+
+/// Returns which item index (or `None` for `"--"`) appears on each of the 3
+/// visible lines given a total item count and cursor position.
+/// Returned tuples are `(line_y_index, Option<item_index>)` where `line_y_index`
+/// is 1–3 (matching 0-based `label_bufs` index = `line_y_index - 1`).
+fn option_line_indices(total: usize, cursor: usize) -> [(usize, Option<usize>); 3] {
+    match total {
+        0 => [(1, None), (2, None), (3, None)],
+        1 => [(1, None), (2, Some(0)), (3, None)],
+        2 => {
+            if cursor == 0 {
+                [(1, None), (2, Some(0)), (3, Some(1))]
+            } else {
+                [(1, Some(0)), (2, Some(1)), (3, None)]
+            }
+        }
+        _ => [
+            (1, if cursor == 0 { None } else { Some(cursor - 1) }),
+            (2, Some(cursor)),
+            (
+                3,
+                if cursor == total - 1 {
+                    None
+                } else {
+                    Some(cursor + 1)
+                },
+            ),
+        ],
+    }
 }
 
 static ROOT_MENU: MenuLevel = MenuLevel {
@@ -372,6 +412,10 @@ static SYSTEM_MENU: MenuLevel = MenuLevel {
         MenuOption {
             label: "Reboot",
             action: MenuAction::Reboot,
+        },
+        MenuOption {
+            label: "Show Custom",
+            action: MenuAction::ShowCustom,
         },
         MenuOption {
             label: "Back",
@@ -855,6 +899,32 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
         }
     }
 
+    /// Construct a `Prompt` asking whether to reset one value back to its default.
+    fn build_reset_value_prompt(&mut self, change_idx: usize) -> MenuSubState {
+        let mut lines = [FmtBuf::new(); 3];
+        core::write!(lines[0], "Reset value").ok();
+        core::write!(lines[1], "to default").ok();
+        core::write!(lines[2], "state?").ok();
+        let mut no_label = FmtBuf::new();
+        core::write!(no_label, "No").ok();
+        let mut yes_label = FmtBuf::new();
+        core::write!(yes_label, "Yes").ok();
+        MenuSubState::Prompt {
+            lines,
+            choices: [
+                PromptChoice {
+                    action: MenuAction::ReturnToCustom,
+                    label: no_label,
+                },
+                PromptChoice {
+                    action: MenuAction::ResetField(change_idx),
+                    label: yes_label,
+                },
+            ],
+            selection: PromptSide::Second,
+        }
+    }
+
     pub fn process_event(&mut self, event: MenuEvents) {
         match event {
             MenuEvents::Press(button) => {
@@ -889,6 +959,37 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                         }
                         _ => {}
                     },
+                    MenuSubState::ShowCustom { cursor } => {
+                        let change_count = self.count_changes();
+                        if change_count == 0 {
+                            self.state = MenuSubState::Browsing;
+                            return;
+                        }
+                        match button {
+                            ButtonCode::CcLeft => {
+                                if self.settings_changed
+                                    && !self.prompt_answered_since_change
+                                    && self.stack_depth > 1
+                                {
+                                    self.state = self.build_save_prompt();
+                                } else {
+                                    self.state = MenuSubState::Browsing;
+                                }
+                            }
+                            ButtonCode::CcUp => {
+                                let new_cursor = (cursor + change_count - 1) % change_count;
+                                self.state = MenuSubState::ShowCustom { cursor: new_cursor };
+                            }
+                            ButtonCode::CcDown => {
+                                let new_cursor = (cursor + 1) % change_count;
+                                self.state = MenuSubState::ShowCustom { cursor: new_cursor };
+                            }
+                            ButtonCode::CcRight | ButtonCode::CcSelect => {
+                                self.state = self.build_reset_value_prompt(cursor);
+                            }
+                            _ => {}
+                        }
+                    }
                     MenuSubState::IdleMode => {
                         if matches!(
                             button,
@@ -1191,6 +1292,9 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                     MenuSubState::Prompt { .. } => {
                         self.process_event(MenuEvents::Press(button));
                     }
+                    MenuSubState::ShowCustom { .. } => {
+                        self.process_event(MenuEvents::Press(button));
+                    }
                     _ => match button {
                         ButtonCode::CcUp | ButtonCode::CcDown => {
                             self.process_event(MenuEvents::Press(button));
@@ -1210,7 +1314,10 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 }
             }
             MenuEvents::Repeat(button) => {
-                if matches!(self.state, MenuSubState::Prompt { .. }) {
+                if matches!(
+                    self.state,
+                    MenuSubState::Prompt { .. } | MenuSubState::ShowCustom { .. }
+                ) {
                     self.process_event(MenuEvents::Press(button));
                     return;
                 }
@@ -1322,6 +1429,9 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 .draw(self.display)
                 .unwrap();
                 self.display.flush().unwrap();
+            }
+            MenuSubState::ShowCustom { cursor } => {
+                self.render_show_custom(cursor, current_combined_button_state);
             }
             MenuSubState::IdleMode => self.print_debug_display(
                 current_combined_button_state,
@@ -1729,53 +1839,35 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
         let level = self.current_level();
         let cursor = self.current_cursor();
         let len = level.options.len();
-        let prev = (cursor + len - 1) % len;
-        let next = (cursor + 1) % len;
 
-        let lines: [(usize, usize, bool); 3] = if len >= 3 {
-            [(1, prev, false), (2, cursor, true), (3, next, false)]
-        } else if len == 2 {
-            // Show the "other" option below when at top, above when at bottom
-            if cursor == 0 {
-                [(2, 0, true), (3, 1, false), (1, usize::MAX, false)]
-            } else {
-                [(1, 0, false), (2, 1, true), (3, usize::MAX, false)]
-            }
-        } else {
-            // len == 1 — only the cursor line
-            [(2, 0, true), (1, usize::MAX, false), (3, usize::MAX, false)]
-        };
-
-        for &(buf_idx, opt_idx, selected) in &lines {
-            if opt_idx >= len {
-                continue;
-            }
-            let option = &level.options[opt_idx];
+        for &(buf_idx, opt_idx) in &option_line_indices(len, cursor) {
             let li = buf_idx - 1; // label/value index (0-based)
+            if let Some(opt_idx) = opt_idx {
+                let option = &level.options[opt_idx];
 
-            // Write label with prefix
-            let prefix = if selected { ">" } else { " " };
-            if matches!(option.action, MenuAction::GoBack) {
-                // Back arrow — write only the selection prefix
-                write!(self.label_bufs[li], "{}", prefix).unwrap();
-                self.back_arrow_y = Some(LINE_Y[buf_idx]);
-            } else {
-                // Normal label
-                let max_label = VISIBLE_WIDTH - 1;
-                let label = if option.label.as_bytes().len() > max_label {
-                    &option.label[..max_label]
+                // Write label with prefix
+                let prefix = if buf_idx == 2 { ">" } else { " " };
+                if matches!(option.action, MenuAction::GoBack) {
+                    write!(self.label_bufs[li], "{}", prefix).unwrap();
+                    self.back_arrow_y = Some(LINE_Y[buf_idx]);
                 } else {
-                    option.label
-                };
-                write!(self.label_bufs[li], "{}{}", prefix, label).unwrap();
+                    let max_label = VISIBLE_WIDTH - 1;
+                    let label = if option.label.as_bytes().len() > max_label {
+                        &option.label[..max_label]
+                    } else {
+                        option.label
+                    };
+                    write!(self.label_bufs[li], "{}{}", prefix, label).unwrap();
 
-                // Write value into a temp buffer, then copy to value_bufs
-                let mut temp = FmtBuf::new();
-                let vo = if selected { override_val } else { None };
-                if self.write_option_value(option, &mut temp, vo) {
-                    self.value_bufs[li].reset();
-                    write!(self.value_bufs[li], "{}", temp.as_str()).unwrap();
+                    let mut temp = FmtBuf::new();
+                    let vo = if buf_idx == 2 { override_val } else { None };
+                    if self.write_option_value(option, &mut temp, vo) {
+                        self.value_bufs[li].reset();
+                        write!(self.value_bufs[li], "{}", temp.as_str()).unwrap();
+                    }
                 }
+            } else {
+                write!(self.label_bufs[li], "--").unwrap();
             }
         }
     }
@@ -1960,6 +2052,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             }
             MenuAction::SaveAndReboot => {
                 use crate::flash_storage::*;
+                self.show_rebooting_screen();
                 // Signal both cores to enter a safe RAM spin-loop.
                 FLASH_PREPARE_FLAG.store(true, Ordering::SeqCst);
                 // Wait for core0 to acknowledge it's spinning.
@@ -1987,6 +2080,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             }
             MenuAction::PerformReset => {
                 use crate::flash_storage::*;
+                self.show_rebooting_screen();
                 FLASH_PREPARE_FLAG.store(true, Ordering::SeqCst);
                 while !FLASH_CORE0_READY.load(Ordering::SeqCst) {
                     core::hint::spin_loop();
@@ -2002,12 +2096,622 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             }
             MenuAction::Reboot => {
                 use crate::flash_storage::*;
+                self.show_rebooting_screen();
                 FLASH_PENDING_REBOOT.store(true, Ordering::SeqCst);
                 loop {
                     core::hint::spin_loop();
                 }
             }
+            MenuAction::ShowCustom => {
+                self.state = MenuSubState::ShowCustom { cursor: 0 };
+            }
+            MenuAction::ResetField(idx) => {
+                self.reset_field_to_default(idx);
+                self.state = MenuSubState::ShowCustom { cursor: 0 };
+            }
+            MenuAction::ReturnToCustom => {
+                self.state = MenuSubState::ShowCustom { cursor: 0 };
+            }
         }
+    }
+
+    /// Count how many settings differ from factory defaults.
+    fn count_changes(&self) -> usize {
+        let defaults = crate::flash_storage::FlashStoragePersistentMemory::default();
+        let mut count = 0_usize;
+        for b in 0..NUM_BUTTONS {
+            if self.settings.buttons[b].debounce_ticks != defaults.buttons[b].debounce_ticks {
+                count += 1;
+            }
+        }
+        for b in 0..NUM_BUTTONS {
+            if self.settings.buttons[b].key != defaults.buttons[b].key {
+                count += 1;
+            }
+        }
+        for e in 0..NUM_ENCODERS {
+            if self.settings.encoders[e].key_up != defaults.encoders[e].key_up {
+                count += 1;
+            }
+            if self.settings.encoders[e].key_down != defaults.encoders[e].key_down {
+                count += 1;
+            }
+            if self.settings.encoders[e].debounce_ticks != defaults.encoders[e].debounce_ticks {
+                count += 1;
+            }
+            if self.settings.encoders[e].step_threshold != defaults.encoders[e].step_threshold {
+                count += 1;
+            }
+            if self.settings.encoders[e].move_timeout_ticks
+                != defaults.encoders[e].move_timeout_ticks
+            {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// Reset the `target_idx`th changed field back to its factory-default value.
+    fn reset_field_to_default(&mut self, target_idx: usize) {
+        let defaults = crate::flash_storage::FlashStoragePersistentMemory::default();
+        let mut idx = 0_usize;
+
+        for b in 0..NUM_BUTTONS {
+            if self.settings.buttons[b].debounce_ticks != defaults.buttons[b].debounce_ticks {
+                if idx == target_idx {
+                    let key = SettingKey::ButtonDebounce(ButtonCode::from_repr(b).unwrap());
+                    self.write_setting(key, defaults.buttons[b].debounce_ticks as u32);
+                    return;
+                }
+                idx += 1;
+            }
+        }
+        for b in 0..NUM_BUTTONS {
+            if self.settings.buttons[b].key != defaults.buttons[b].key {
+                if idx == target_idx {
+                    let code = ButtonCode::from_repr(b).unwrap();
+                    self.write_key_binding(code, defaults.buttons[b].key);
+                    return;
+                }
+                idx += 1;
+            }
+        }
+        for e in 0..NUM_ENCODERS {
+            if self.settings.encoders[e].key_up != defaults.encoders[e].key_up {
+                if idx == target_idx {
+                    let code = if e == 0 {
+                        ButtonCode::P1Positive
+                    } else {
+                        ButtonCode::P2Positive
+                    };
+                    self.write_key_binding(code, defaults.encoders[e].key_up);
+                    return;
+                }
+                idx += 1;
+            }
+            if self.settings.encoders[e].key_down != defaults.encoders[e].key_down {
+                if idx == target_idx {
+                    let code = if e == 0 {
+                        ButtonCode::P1Negative
+                    } else {
+                        ButtonCode::P2Negative
+                    };
+                    self.write_key_binding(code, defaults.encoders[e].key_down);
+                    return;
+                }
+                idx += 1;
+            }
+            if self.settings.encoders[e].debounce_ticks != defaults.encoders[e].debounce_ticks {
+                if idx == target_idx {
+                    let key = SettingKey::EncoderDebounce(e);
+                    self.write_setting(key, defaults.encoders[e].debounce_ticks as u32);
+                    return;
+                }
+                idx += 1;
+            }
+            if self.settings.encoders[e].step_threshold != defaults.encoders[e].step_threshold {
+                if idx == target_idx {
+                    let key = SettingKey::EncoderStepThreshold(e);
+                    self.write_setting(key, defaults.encoders[e].step_threshold as u32);
+                    return;
+                }
+                idx += 1;
+            }
+            if self.settings.encoders[e].move_timeout_ticks
+                != defaults.encoders[e].move_timeout_ticks
+            {
+                if idx == target_idx {
+                    let key = SettingKey::EncoderMoveTimeout(e);
+                    self.write_setting(key, defaults.encoders[e].move_timeout_ticks as u32);
+                    return;
+                }
+                idx += 1;
+            }
+        }
+    }
+
+    /// Render the show-custom screen: three lines of changed settings.
+    fn render_show_custom(&mut self, cursor: usize, _state: u64) {
+        let defaults = crate::flash_storage::FlashStoragePersistentMemory::default();
+        // ── Count total changes ──
+        let total = self.count_changes();
+
+        self.display.clear(BinaryColor::Off).unwrap();
+
+        if total == 0 {
+            Text::with_baseline(
+                "No custom",
+                Point::new(0, LINE_Y[1]),
+                self.text_style,
+                Baseline::Top,
+            )
+            .draw(self.display)
+            .unwrap();
+            Text::with_baseline(
+                "settings",
+                Point::new(0, LINE_Y[2]),
+                self.text_style,
+                Baseline::Top,
+            )
+            .draw(self.display)
+            .unwrap();
+            self.display.flush().unwrap();
+            return;
+        }
+
+        // ── Determine section title from cursor position ──
+        let mut idx = 0_usize;
+        'section: {
+            for b in 0..NUM_BUTTONS {
+                if self.settings.buttons[b].debounce_ticks != defaults.buttons[b].debounce_ticks {
+                    if idx + 1 > cursor {
+                        self.title_buf.reset();
+                        core::write!(self.title_buf, "Button Debounce").ok();
+                        break 'section;
+                    }
+                    idx += 1;
+                }
+            }
+            for b in 0..NUM_BUTTONS {
+                if self.settings.buttons[b].key != defaults.buttons[b].key {
+                    if idx + 1 > cursor {
+                        self.title_buf.reset();
+                        core::write!(self.title_buf, "Button Keys").ok();
+                        break 'section;
+                    }
+                    idx += 1;
+                }
+            }
+            for e in 0..NUM_ENCODERS {
+                if self.settings.encoders[e].key_up != defaults.encoders[e].key_up {
+                    if idx + 1 > cursor {
+                        self.title_buf.reset();
+                        core::write!(self.title_buf, "Encoder Keys").ok();
+                        break 'section;
+                    }
+                    idx += 1;
+                }
+                if self.settings.encoders[e].key_down != defaults.encoders[e].key_down {
+                    if idx + 1 > cursor {
+                        self.title_buf.reset();
+                        core::write!(self.title_buf, "Encoder Keys").ok();
+                        break 'section;
+                    }
+                    idx += 1;
+                }
+                if self.settings.encoders[e].debounce_ticks != defaults.encoders[e].debounce_ticks {
+                    if idx + 1 > cursor {
+                        self.title_buf.reset();
+                        core::write!(self.title_buf, "Encoder Debounce").ok();
+                        break 'section;
+                    }
+                    idx += 1;
+                }
+                if self.settings.encoders[e].step_threshold != defaults.encoders[e].step_threshold {
+                    if idx + 1 > cursor {
+                        self.title_buf.reset();
+                        core::write!(self.title_buf, "Encoder Threshold").ok();
+                        break 'section;
+                    }
+                    idx += 1;
+                }
+                if self.settings.encoders[e].move_timeout_ticks
+                    != defaults.encoders[e].move_timeout_ticks
+                {
+                    if idx + 1 > cursor {
+                        self.title_buf.reset();
+                        core::write!(self.title_buf, "Encoder Timeout").ok();
+                        break 'section;
+                    }
+                    idx += 1;
+                }
+            }
+            // fallback — should not happen
+            self.title_buf.reset();
+        }
+
+        // ── Draw title and current item ──
+        // Use label_bufs[0..2] for the three visible lines.
+        for buf in &mut self.label_bufs {
+            buf.reset();
+        }
+
+        // Fill the three visible lines using the shared helper.
+        for &(buf_idx, opt_idx) in &option_line_indices(total, cursor) {
+            let mut buf = self.label_bufs[buf_idx - 1];
+            if let Some(idx) = opt_idx {
+                self.format_change_item(&defaults, idx, &mut buf);
+            } else {
+                core::write!(buf, "--").ok();
+            }
+            self.label_bufs[buf_idx - 1] = buf;
+        }
+
+        // Title
+        let title = self.title_buf.as_str();
+        if !title.is_empty() {
+            Text::with_baseline(
+                title,
+                Point::new(0, LINE_Y[0]),
+                self.text_style,
+                Baseline::Top,
+            )
+            .draw(self.display)
+            .unwrap();
+        }
+
+        // Three option lines at y=16,32,48
+        for i in 0..3_usize {
+            let s = self.label_bufs[i].as_str();
+            if !s.is_empty() {
+                Text::with_baseline(
+                    s,
+                    Point::new(0, LINE_Y[i + 1]),
+                    self.text_style,
+                    Baseline::Top,
+                )
+                .draw(self.display)
+                .unwrap();
+            }
+        }
+
+        // Highlight box on the middle line (cursor is the second of three shown)
+        let hl = self.label_bufs[1].as_str();
+        let hl_len = hl.as_bytes().len() as i32 * CHAR_W;
+        Rectangle::new(
+            Point::new(0, LINE_Y[2] + 1),
+            Size::new(hl_len as u32 + 2, 15),
+        )
+        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+        .draw(self.display)
+        .unwrap();
+
+        self.display.flush().unwrap();
+    }
+
+    /// Write a single line of the show-custom list into `buf` for the `target_idx`th change.
+    fn format_change_item(
+        &self,
+        defaults: &crate::flash_storage::FlashStoragePersistentMemory,
+        target_idx: usize,
+        buf: &mut FmtBuf,
+    ) {
+        let mut idx = 0_usize;
+
+        for b in 0..NUM_BUTTONS {
+            if self.settings.buttons[b].debounce_ticks != defaults.buttons[b].debounce_ticks {
+                if idx == target_idx {
+                    let name = ButtonCode::from_repr(b).map_or("?", |c| match c {
+                        ButtonCode::P1_1 => "P1_1 db",
+                        ButtonCode::P1_2 => "P1_2 db",
+                        ButtonCode::P1_3 => "P1_3 db",
+                        ButtonCode::P1_4 => "P1_4 db",
+                        ButtonCode::P1_5 => "P1_5 db",
+                        ButtonCode::P1_6 => "P1_6 db",
+                        ButtonCode::P1_7 => "P1_7 db",
+                        ButtonCode::P1Start => "P1St db",
+                        ButtonCode::P1Select => "P1Sl db",
+                        ButtonCode::P2_1 => "P2_1 db",
+                        ButtonCode::P2_2 => "P2_2 db",
+                        ButtonCode::P2_3 => "P2_3 db",
+                        ButtonCode::P2_4 => "P2_4 db",
+                        ButtonCode::P2_5 => "P2_5 db",
+                        ButtonCode::P2_6 => "P2_6 db",
+                        ButtonCode::P2_7 => "P2_7 db",
+                        ButtonCode::P2Start => "P2St db",
+                        ButtonCode::P2Select => "P2Sl db",
+                        ButtonCode::Escape => "Esc db",
+                        ButtonCode::CcUp => "CCUp db",
+                        ButtonCode::CcDown => "CCDn db",
+                        ButtonCode::CcLeft => "CCLt db",
+                        ButtonCode::CcRight => "CCRt db",
+                        ButtonCode::CcSelect => "CCSl db",
+                        ButtonCode::VolumeUp => "VUp db",
+                        ButtonCode::VolumeDown => "VDn db",
+                        ButtonCode::Mute => "Mute db",
+                        _ => "? db",
+                    });
+                    write!(
+                        buf,
+                        "{}: {} ms",
+                        name,
+                        self.settings.buttons[b].debounce_ticks / 1_000
+                    )
+                    .ok();
+                    return;
+                }
+                idx += 1;
+            }
+        }
+
+        for b in 0..NUM_BUTTONS {
+            if self.settings.buttons[b].key != defaults.buttons[b].key {
+                if idx == target_idx {
+                    let name = ButtonCode::from_repr(b).map_or("?", |c| match c {
+                        ButtonCode::P1_1 => "P1_1",
+                        ButtonCode::P1_2 => "P1_2",
+                        ButtonCode::P1_3 => "P1_3",
+                        ButtonCode::P1_4 => "P1_4",
+                        ButtonCode::P1_5 => "P1_5",
+                        ButtonCode::P1_6 => "P1_6",
+                        ButtonCode::P1_7 => "P1_7",
+                        ButtonCode::P1Start => "P1St",
+                        ButtonCode::P1Select => "P1Sl",
+                        ButtonCode::P2_1 => "P2_1",
+                        ButtonCode::P2_2 => "P2_2",
+                        ButtonCode::P2_3 => "P2_3",
+                        ButtonCode::P2_4 => "P2_4",
+                        ButtonCode::P2_5 => "P2_5",
+                        ButtonCode::P2_6 => "P2_6",
+                        ButtonCode::P2_7 => "P2_7",
+                        ButtonCode::P2Start => "P2St",
+                        ButtonCode::P2Select => "P2Sl",
+                        ButtonCode::Escape => "Esc",
+                        ButtonCode::CcUp => "CCUp",
+                        ButtonCode::CcDown => "CCDn",
+                        ButtonCode::CcLeft => "CCLt",
+                        ButtonCode::CcRight => "CCRt",
+                        ButtonCode::CcSelect => "CCSl",
+                        ButtonCode::VolumeUp => "VUp",
+                        ButtonCode::VolumeDown => "VDn",
+                        ButtonCode::Mute => "Mute",
+                        _ => "?",
+                    });
+                    let key = self.settings.buttons[b].key;
+                    let key_name = Self::key_name(key);
+                    write!(buf, "{}: {}", name, key_name).ok();
+                    return;
+                }
+                idx += 1;
+            }
+        }
+
+        for e in 0..NUM_ENCODERS {
+            if self.settings.encoders[e].key_up != defaults.encoders[e].key_up {
+                if idx == target_idx {
+                    let enc_name = if e == 0 { "P1Up" } else { "P2Up" };
+                    let key_name = Self::key_name(self.settings.encoders[e].key_up);
+                    write!(buf, "{}: {}", enc_name, key_name).ok();
+                    return;
+                }
+                idx += 1;
+            }
+            if self.settings.encoders[e].key_down != defaults.encoders[e].key_down {
+                if idx == target_idx {
+                    let enc_name = if e == 0 { "P1Dn" } else { "P2Dn" };
+                    let key_name = Self::key_name(self.settings.encoders[e].key_down);
+                    write!(buf, "{}: {}", enc_name, key_name).ok();
+                    return;
+                }
+                idx += 1;
+            }
+            if self.settings.encoders[e].debounce_ticks != defaults.encoders[e].debounce_ticks {
+                if idx == target_idx {
+                    let enc_name = if e == 0 { "P1Edb" } else { "P2Edb" };
+                    write!(
+                        buf,
+                        "{}: {} ms",
+                        enc_name,
+                        self.settings.encoders[e].debounce_ticks / 1_000
+                    )
+                    .ok();
+                    return;
+                }
+                idx += 1;
+            }
+            if self.settings.encoders[e].step_threshold != defaults.encoders[e].step_threshold {
+                if idx == target_idx {
+                    let enc_name = if e == 0 { "P1Eth" } else { "P2Eth" };
+                    write!(
+                        buf,
+                        "{}: {} Steps",
+                        enc_name, self.settings.encoders[e].step_threshold
+                    )
+                    .ok();
+                    return;
+                }
+                idx += 1;
+            }
+            if self.settings.encoders[e].move_timeout_ticks
+                != defaults.encoders[e].move_timeout_ticks
+            {
+                if idx == target_idx {
+                    let enc_name = if e == 0 { "P1Etm" } else { "P2Etm" };
+                    write!(
+                        buf,
+                        "{}: {} ms",
+                        enc_name,
+                        self.settings.encoders[e].move_timeout_ticks / 1_000
+                    )
+                    .ok();
+                    return;
+                }
+                idx += 1;
+            }
+        }
+    }
+
+    /// Convert a USB HID key code to a short human-readable name.
+    fn key_name(key: u8) -> &'static str {
+        match key {
+            0 => "None",
+            1 => "ErrRO",
+            2 => "POST",
+            3 => "Err",
+            4 => "A",
+            5 => "B",
+            6 => "C",
+            7 => "D",
+            8 => "E",
+            9 => "F",
+            10 => "G",
+            11 => "H",
+            12 => "I",
+            13 => "J",
+            14 => "K",
+            15 => "L",
+            16 => "M",
+            17 => "N",
+            18 => "O",
+            19 => "P",
+            20 => "Q",
+            21 => "R",
+            22 => "S",
+            23 => "T",
+            24 => "U",
+            25 => "V",
+            26 => "W",
+            27 => "X",
+            28 => "Y",
+            29 => "Z",
+            30 => "K1",
+            31 => "K2",
+            32 => "K3",
+            33 => "K4",
+            34 => "K5",
+            35 => "K6",
+            36 => "K7",
+            37 => "K8",
+            38 => "K9",
+            39 => "K0",
+            40 => "Entr",
+            41 => "Esc",
+            42 => "BkSp",
+            43 => "Tab",
+            44 => "Spc",
+            45 => "-_",
+            46 => "=+",
+            47 => "[{",
+            48 => "]}",
+            49 => "\\|",
+            50 => "#~",
+            51 => ";:",
+            52 => "'\"",
+            53 => "`~",
+            54 => ",<",
+            55 => ".>",
+            56 => "/?",
+            57 => "Caps",
+            58 => "F1",
+            59 => "F2",
+            60 => "F3",
+            61 => "F4",
+            62 => "F5",
+            63 => "F6",
+            64 => "F7",
+            65 => "F8",
+            66 => "F9",
+            67 => "F10",
+            68 => "F11",
+            69 => "F12",
+            70 => "PrSc",
+            71 => "ScLk",
+            72 => "Paus",
+            73 => "Ins",
+            74 => "Hom",
+            75 => "PgUp",
+            76 => "Del",
+            77 => "End",
+            78 => "PgDn",
+            79 => "Rig",
+            80 => "Lef",
+            81 => "Dow",
+            82 => "Up",
+            83 => "NLck",
+            84 => "K/=",
+            85 => "K*",
+            86 => "K-",
+            87 => "K+",
+            88 => "KEn",
+            89 => "K1",
+            90 => "K2",
+            91 => "K3",
+            92 => "K4",
+            93 => "K5",
+            94 => "K6",
+            95 => "K7",
+            96 => "K8",
+            97 => "K9",
+            98 => "K0",
+            99 => "K.",
+            100 => "K\\",
+            101 => "App",
+            102 => "Pow",
+            103 => "K=",
+            104 => "F13",
+            105 => "F14",
+            106 => "F15",
+            107 => "F16",
+            108 => "F17",
+            109 => "F18",
+            110 => "F19",
+            111 => "F20",
+            112 => "F21",
+            113 => "F22",
+            114 => "F23",
+            115 => "F24",
+            116 => "Exe",
+            117 => "Help",
+            118 => "Men",
+            119 => "Sel",
+            120 => "Stp",
+            121 => "Agn",
+            122 => "Und",
+            123 => "Cut",
+            124 => "Cop",
+            125 => "Pst",
+            126 => "Fin",
+            127 => "SwC",
+            128 => "Mte",
+            129 => "AlE",
+            130 => "LAl",
+            131 => "RAl",
+            132 => "LSh",
+            133 => "RSh",
+            224 => "LCtl",
+            225 => "LShf",
+            226 => "LAlt",
+            227 => "LMta",
+            228 => "RCtl",
+            229 => "RShf",
+            230 => "RAlt",
+            231 => "RGui",
+            _ => "?",
+        }
+    }
+
+    /// Display \"Rebooting...\" on the OLED before a system reset.
+    fn show_rebooting_screen(&mut self) {
+        self.display.clear(BinaryColor::Off).unwrap();
+        Text::with_baseline(
+            "Rebooting...",
+            Point::new(18, LINE_Y[2]),
+            self.text_style,
+            Baseline::Top,
+        )
+        .draw(self.display)
+        .unwrap();
+        self.display.flush().unwrap();
     }
 
     fn push_level(&mut self, level: &'static MenuLevel) {

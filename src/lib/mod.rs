@@ -91,7 +91,7 @@ pub const ENCODER_DIRECTION_HEADER: u32 = 0b10101;
 /// (0–31) index the lower half; logical (encoder-derived) button codes
 /// (32+) index the upper half, so the same bit-scanning logic handles both.
 #[repr(usize)]
-#[derive(Clone, Copy, PartialEq, EnumIter)]
+#[derive(Clone, Copy, PartialEq, EnumIter, strum::FromRepr)]
 pub enum ButtonCode {
     // Physical buttons (0–31, currently 0–26 are wired)
     P1_1 = 0,

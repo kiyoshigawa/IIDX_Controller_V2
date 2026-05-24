@@ -30,7 +30,7 @@ This is a rust program designed for the [Waveshare Core 2350B](https://www.waves
 	- [x] Lighting Configuration Mode Button
 	- [x] JTAG spring pin header for programming/debug
 - [x] Add additional system control buttons with an OLED screen display to center panel
-	- [ ] Adjustable settings for gameplay in addition to lighting controller control?
+	- [ ] Adjustable settings for gameplay in addition to lighting controller control
 		- [x] Change encoder step thresholds ~~live~~ and save locally
 		- [x] debounce time adjustments
 		- [x] keybindings for all buttons
