@@ -36,6 +36,8 @@ use usb_device::{bus::*, class_prelude::*, prelude::*};
 use usbd_human_interface_device::{page::Keyboard, prelude::*};
 
 // Library crate imports from this repo
+use iidx_controller_v2::flash_storage::write_storage;
+use iidx_controller_v2::flash_storage::*;
 use iidx_controller_v2::input_handler::InputHandler;
 use iidx_controller_v2::menu_handler::MenuHandler;
 use iidx_controller_v2::*;
@@ -55,6 +57,11 @@ pub static IMAGE_DEF: hal::block::ImageDef = hal::block::ImageDef::secure_exe();
 #[entry]
 fn main() -> ! {
     info!("Core0 Program start!");
+
+    // Ensure inter-core flash-programming flags start clean after any warm reset.
+    FLASH_PREPARE_FLAG.store(false, Ordering::SeqCst);
+    FLASH_CORE0_READY.store(false, Ordering::SeqCst);
+    FLASH_PENDING_REBOOT.store(false, Ordering::SeqCst);
     let mut pac = pac::Peripherals::take().unwrap();
     let _core = cortex_m::Peripherals::take().unwrap();
     let mut watchdog = hal::Watchdog::new(pac.WATCHDOG);
@@ -541,6 +548,11 @@ fn main() -> ! {
                     input_handler.update_display();
                 }
 
+                // If the user confirmed save & reboot, persist settings and reset.
+                if input_handler.menu_handler.pending_reboot {
+                    cortex_m::peripheral::SCB::sys_reset();
+                }
+
                 // We update this last so everything that needs to react to an input change in the
                 // handlers above can do so before we reset them.
                 input_handler.previous_combined_button_state =
@@ -561,6 +573,21 @@ fn main() -> ! {
         if timer.get_counter().ticks() > (last_core0_heartbeat_tick + CORE0_HEARTBEAT_RATE) {
             heartbeat_led_pin_core0.toggle().unwrap();
             last_core0_heartbeat_tick = timer.get_counter().ticks();
+        }
+
+        // Safe-loop for flash programming: if core1 signals a flash write,
+        // acknowledge and spin in a tight RAM loop until the write completes.
+        if FLASH_PREPARE_FLAG.load(Ordering::SeqCst) {
+            FLASH_CORE0_READY.store(true, Ordering::SeqCst);
+            while FLASH_PREPARE_FLAG.load(Ordering::SeqCst) {
+                core::hint::spin_loop();
+            }
+            FLASH_CORE0_READY.store(false, Ordering::SeqCst);
+        }
+
+        // If core1 has written flash and requested a reboot, do it here (core0 can sys_reset).
+        if FLASH_PENDING_REBOOT.load(Ordering::SeqCst) {
+            cortex_m::peripheral::SCB::sys_reset();
         }
 
         // put the current state of all the buttons (debounced) into the buttons array:
@@ -771,109 +798,6 @@ fn get_keys(buttons: &[ButtonState]) -> [Keyboard; NUM_BUTTONS] {
         }
     }
     keyboard
-}
-
-/// Write the storage struct to flash.
-/// FLASH_STORAGE_OFFSET must be 256-byte aligned for program, 4096 aligned for erase
-/// Uses an atomic guard (`FLASH_WRITE_IN_PROGRESS`) to prevent concurrent
-/// calls from both cores. If the guard is already claimed, the function logs
-/// a warning and returns immediately without writing.
-unsafe fn write_storage(storage: &FlashStoragePersistentMemory) {
-    // Atomic guard: if someone else is already writing, skip.
-    if FLASH_WRITE_IN_PROGRESS.swap(true, Ordering::AcqRel) {
-        info!("write_storage: another write is already in progress, skipping.");
-        return;
-    }
-
-    const FLASH_SECTOR_SIZE: u32 = 4096;
-    const FLASH_PAGE_SIZE: u32 = 256;
-
-    let struct_size = core::mem::size_of::<FlashStoragePersistentMemory>();
-    let struct_ptr = storage as *const FlashStoragePersistentMemory as *const u8;
-
-    // Step 1: Erase enough 4 KB sectors to cover the entire struct.
-    // flash_range_erase(addr, count, block_size, block_cmd)
-    // block_size=4096, block_cmd=0x20 (sector erase command for most NOR flashes)
-    // Round struct_size up to the next 4 KB boundary.
-    let erase_size =
-        ((struct_size as u32 + (FLASH_SECTOR_SIZE - 1)) / FLASH_SECTOR_SIZE) * FLASH_SECTOR_SIZE;
-    unsafe {
-        hal::rom_data::flash_range_erase(
-            FLASH_STORAGE_OFFSET,
-            erase_size as usize,
-            FLASH_SECTOR_SIZE,
-            0x20,
-        );
-    }
-
-    // Step 2: Program the struct data one 256-byte page at a time.
-    // flash_range_program(addr, data_ptr, count) requires a 256-byte aligned
-    // address and a count that is a multiple of 256.
-    let mut remaining = struct_size;
-    let mut src = struct_ptr;
-    let mut flash_offs = FLASH_STORAGE_OFFSET;
-    while remaining > 0 {
-        let mut page_buf = [0xFFu8; 256];
-        let chunk_len = core::cmp::min(remaining, FLASH_PAGE_SIZE as usize);
-        unsafe {
-            core::ptr::copy_nonoverlapping(src, page_buf.as_mut_ptr(), chunk_len);
-        }
-        unsafe {
-            hal::rom_data::flash_range_program(
-                flash_offs,
-                page_buf.as_ptr(),
-                FLASH_PAGE_SIZE as usize,
-            );
-        }
-        remaining -= chunk_len;
-        src = unsafe { src.add(chunk_len) };
-        flash_offs += FLASH_PAGE_SIZE;
-    }
-
-    // Step 3: Flush the XIP cache so subsequent XIP reads see the new data.
-    unsafe {
-        hal::rom_data::flash_flush_cache();
-    }
-
-    // Release the atomic guard
-    FLASH_WRITE_IN_PROGRESS.store(false, Ordering::Release);
-}
-
-/// Erase the persistent storage region, restoring flash to an uninitialised state.
-/// On the next boot the device will detect fresh storage and re-write the defaults.
-///
-/// The erase size is calculated from `core::mem::size_of_val(storage)` so it
-/// automatically covers the full struct regardless of future growth.
-#[allow(dead_code)]
-unsafe fn clear_storage(storage: &FlashStoragePersistentMemory) {
-    // Atomic guard: if someone else is already writing, skip.
-    if FLASH_WRITE_IN_PROGRESS.swap(true, Ordering::AcqRel) {
-        info!("clear_storage: another write is already in progress, skipping.");
-        return;
-    }
-
-    const FLASH_SECTOR_SIZE: u32 = 4096;
-
-    let struct_size = core::mem::size_of_val(storage);
-    let erase_size =
-        ((struct_size as u32 + (FLASH_SECTOR_SIZE - 1)) / FLASH_SECTOR_SIZE) * FLASH_SECTOR_SIZE;
-
-    unsafe {
-        hal::rom_data::flash_range_erase(
-            FLASH_STORAGE_OFFSET,
-            erase_size as usize,
-            FLASH_SECTOR_SIZE,
-            0x20,
-        );
-    }
-
-    // Flush the XIP cache so subsequent reads see the erased (0xFF) state.
-    unsafe {
-        hal::rom_data::flash_flush_cache();
-    }
-
-    FLASH_WRITE_IN_PROGRESS.store(false, Ordering::Release);
-    info!("Persistent storage cleared. Next boot will re-initialise defaults.");
 }
 
 /// Program metadata for `picotool info`

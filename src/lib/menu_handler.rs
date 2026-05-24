@@ -9,6 +9,7 @@ use crate::{
     OledDisplay,
 };
 use core::fmt::Write;
+use core::sync::atomic::Ordering;
 use defmt::debug;
 use display_interface::WriteOnlyDataCommand;
 use embedded_graphics::{
@@ -37,7 +38,7 @@ const DISPLAY_W: u32 = 128;
 const DISPLAY_R: i32 = (DISPLAY_W - 1) as i32;
 
 /// All defined USB HID keyboard usage codes (0-231, skipping reserved range 165-223).
-const VALID_KEYS: &[u8] = &[
+static VALID_KEYS: &[u8] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
     26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49,
     50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73,
@@ -63,7 +64,7 @@ const ENCODER2_LABEL_POS: Point = Point::new(DISPLAY_R, 32);
 
 /// These are the 'on' pixels used for the wiki arrow graphic in the debug screen.
 #[rustfmt::skip]
-const ARROW_GRAPHIC_PIXELS: [(i32, i32); 12] = [
+static ARROW_GRAPHIC_PIXELS: [(i32, i32); 12] = [
     (0,0), (1,0), (2,0),
     (0,1), (1,1),
     (0,2),        (2,2),
@@ -82,7 +83,7 @@ const P2_NEGATIVE_ANCHOR: Point = Point::new(126, BUTTON_GRAPHIC_ROW_HEIGHT as i
 
 /// Binary pixel representation of the IIDX deck control layout.
 #[rustfmt::skip]
-pub(crate) const BUTTON_GRAPHIC: [u8; 16 * 26] = [
+static BUTTON_GRAPHIC: [u8; 16 * 26] = [
     0b00000000, 0b00000000, 0b00001111, 0b10000000, 0b00001111, 0b10000000, 0b01111100, 0b01111100, 0b01111100, 0b01111100, 0b00000001, 0b11110000, 0b00000001, 0b11110000, 0b00000000, 0b00000000, // Row 1
     0b11100000, 0b00000000, 0b00001000, 0b10000000, 0b00001000, 0b10000000, 0b01000100, 0b01000100, 0b01000100, 0b01000100, 0b00000001, 0b00010000, 0b00000001, 0b00010000, 0b00000000, 0b00000111, // Row 2
     0b00011000, 0b00000000, 0b00001000, 0b10000000, 0b00001000, 0b10000000, 0b01000100, 0b01000100, 0b01000100, 0b01000100, 0b00000001, 0b00010000, 0b00000001, 0b00010000, 0b00000000, 0b00011000, // Row 3
@@ -114,7 +115,7 @@ pub(crate) const BUTTON_GRAPHIC: [u8; 16 * 26] = [
 /// Left-pointing back-arrow glyph for menu "Back" options.
 /// Pixels relative to the top-left of the glyph bounding box.
 #[rustfmt::skip]
-const BACK_ARROW_PIXELS: [(i32, i32); 48] = [
+static BACK_ARROW_PIXELS: [(i32, i32); 48] = [
                                                                                         (12,0),(13,0),
                          ( 3,1),                                                        (12,1),(13,1),
                   ( 2,2),( 3,2),                                                        (12,2),(13,2),
@@ -128,7 +129,7 @@ const BACK_ARROW_PIXELS: [(i32, i32); 48] = [
 
 /// Static rectangle coordinates for each physical button's debug-indicator position.
 #[rustfmt::skip]
-pub(crate) const BUTTON_DEBUG_RECTANGLES: [Rectangle; NUM_BUTTONS] = [
+static BUTTON_DEBUG_RECTANGLES: [Rectangle; NUM_BUTTONS] = [
     Rectangle::new(Point::new( 17, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 19), Size::new(3, 5)),
     Rectangle::new(Point::new( 21, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) +  9), Size::new(3, 5)),
     Rectangle::new(Point::new( 25, (BUTTON_GRAPHIC_ROW_HEIGHT as i32) + 19), Size::new(3, 5)),
@@ -216,6 +217,30 @@ enum MenuAction {
     OpenWikiEdit(usize),
     /// Visible but non-functional — reserved for future features.
     None,
+    /// Save current settings to flash and reboot the chip.
+    SaveAndReboot,
+    /// Dismiss the save prompt without saving.
+    Discard,
+    /// Reset all settings to factory defaults, with confirmation prompt.
+    ResetDefaults,
+    /// Internal — perform the actual reset after user confirms.
+    PerformReset,
+    /// Reboot the chip without saving or clearing settings.
+    Reboot,
+}
+
+/// Which of the two choices in a `Prompt` is currently selected.
+#[derive(Clone, Copy)]
+enum PromptSide {
+    First,
+    Second,
+}
+
+/// One option in a `Prompt` — an action and its display label.
+#[derive(Clone, Copy)]
+struct PromptChoice {
+    action: MenuAction,
+    label: FmtBuf,
 }
 
 /// Top-level state machine controlling what the handler does with inputs
@@ -244,6 +269,13 @@ enum MenuSubState {
     },
     DisplayMode(MenuMode),
     IdleMode,
+    /// General-purpose confirmation prompt with up to 3 lines of text
+    /// and two selectable choices.
+    Prompt {
+        lines: [FmtBuf; 3],
+        choices: [PromptChoice; 2],
+        selection: PromptSide,
+    },
 }
 
 /// Returns the [`Flip`] orientation required for a given encoder
@@ -278,6 +310,10 @@ static ROOT_MENU: MenuLevel = MenuLevel {
         MenuOption {
             label: "Debug",
             action: MenuAction::OpenSubmenu(&DEBUG_MENU),
+        },
+        MenuOption {
+            label: "System",
+            action: MenuAction::OpenSubmenu(&SYSTEM_MENU),
         },
     ],
 };
@@ -314,6 +350,28 @@ static DEBUG_MENU: MenuLevel = MenuLevel {
         MenuOption {
             label: "Pixel Test",
             action: MenuAction::ShowPixelTest,
+        },
+        MenuOption {
+            label: "Back",
+            action: MenuAction::GoBack,
+        },
+    ],
+};
+
+static SYSTEM_MENU: MenuLevel = MenuLevel {
+    title: "System",
+    options: &[
+        MenuOption {
+            label: "Save+Reboot",
+            action: MenuAction::SaveAndReboot,
+        },
+        MenuOption {
+            label: "ResetDefault",
+            action: MenuAction::ResetDefaults,
+        },
+        MenuOption {
+            label: "Reboot",
+            action: MenuAction::Reboot,
         },
         MenuOption {
             label: "Back",
@@ -586,6 +644,7 @@ static KEYBIND_MENU: MenuLevel = MenuLevel {
 
 /// A tiny fixed-size buffer for formatting a single short line of text
 /// (up to [`BUF_SIZE`] bytes) before drawing it to the OLED.
+#[derive(Clone, Copy)]
 pub(crate) struct FmtBuf {
     buf: [u8; BUF_SIZE],
     ptr: usize,
@@ -699,6 +758,13 @@ pub struct MenuHandler<'a, D> {
     /// RAM shadow of flash settings — modified in-place during editing,
     /// written to flash only when the user explicitly saves.
     pub settings: FlashStoragePersistentMemory,
+    /// True when any setting has been written to the RAM copy since boot.
+    pub settings_changed: bool,
+    /// Set to true when the user confirms "Save & Reboot".
+    pub pending_reboot: bool,
+    /// True once the save prompt has been shown and dismissed since the last change.
+    /// Prevents the prompt from re-appearing on every back-navigation within a change batch.
+    prompt_answered_since_change: bool,
     /// Independent value for "All" debounce — separate from any single button.
     all_debounce_value: u32,
     /// Y position of the back-arrow glyph, if any option on screen has `GoBack`.
@@ -726,6 +792,9 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             frames_rendered: 0,
             state: MenuSubState::IdleMode,
             saved_state: MenuSubState::Browsing,
+            settings_changed: false,
+            pending_reboot: false,
+            prompt_answered_since_change: false,
             stack,
             stack_depth: 1,
             settings,
@@ -734,11 +803,92 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
         }
     }
 
+    /// Construct a `Prompt` state asking the user whether to save changed settings.
+    fn build_save_prompt(&mut self) -> MenuSubState {
+        let mut lines = [FmtBuf::new(); 3];
+        core::write!(lines[0], "Save changes").ok();
+        core::write!(lines[1], "to flash and").ok();
+        core::write!(lines[2], "reboot?").ok();
+        let mut no_label = FmtBuf::new();
+        core::write!(no_label, "No").ok();
+        let mut yes_label = FmtBuf::new();
+        core::write!(yes_label, "Yes").ok();
+        MenuSubState::Prompt {
+            lines,
+            choices: [
+                PromptChoice {
+                    action: MenuAction::Discard,
+                    label: no_label,
+                },
+                PromptChoice {
+                    action: MenuAction::SaveAndReboot,
+                    label: yes_label,
+                },
+            ],
+            selection: PromptSide::Second,
+        }
+    }
+
+    /// Construct a `Prompt` state asking the user to confirm factory reset.
+    fn build_reset_prompt(&mut self) -> MenuSubState {
+        let mut lines = [FmtBuf::new(); 3];
+        core::write!(lines[0], "This restores").ok();
+        core::write!(lines[1], "ALL changes").ok();
+        core::write!(lines[2], "back to base!").ok();
+        let mut no_label = FmtBuf::new();
+        core::write!(no_label, "No").ok();
+        let mut yes_label = FmtBuf::new();
+        core::write!(yes_label, "Yes").ok();
+        MenuSubState::Prompt {
+            lines,
+            choices: [
+                PromptChoice {
+                    action: MenuAction::Discard,
+                    label: no_label,
+                },
+                PromptChoice {
+                    action: MenuAction::PerformReset,
+                    label: yes_label,
+                },
+            ],
+            selection: PromptSide::First,
+        }
+    }
+
     pub fn process_event(&mut self, event: MenuEvents) {
         match event {
             MenuEvents::Press(button) => {
                 let current_state = self.state;
                 match current_state {
+                    MenuSubState::Prompt {
+                        lines,
+                        choices,
+                        selection,
+                    } => match button {
+                        ButtonCode::CcUp
+                        | ButtonCode::CcDown
+                        | ButtonCode::CcLeft
+                        | ButtonCode::CcRight => {
+                            let new_sel = match selection {
+                                PromptSide::First => PromptSide::Second,
+                                PromptSide::Second => PromptSide::First,
+                            };
+                            self.state = MenuSubState::Prompt {
+                                lines,
+                                choices,
+                                selection: new_sel,
+                            };
+                        }
+                        ButtonCode::CcSelect => {
+                            self.prompt_answered_since_change = true;
+                            let action = match selection {
+                                PromptSide::First => choices[0].action,
+                                PromptSide::Second => choices[1].action,
+                            };
+                            self.execute_action(action);
+                        }
+                        _ => {}
+                    },
                     MenuSubState::IdleMode => {
                         if matches!(
                             button,
@@ -780,7 +930,14 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                                 self.execute_action(level.options[cursor].action);
                             }
                             ButtonCode::CcLeft => {
-                                self.pop_level();
+                                if self.settings_changed
+                                    && !self.prompt_answered_since_change
+                                    && self.stack_depth > 1
+                                {
+                                    self.state = self.build_save_prompt();
+                                } else {
+                                    self.pop_level();
+                                }
                             }
                             _ => {}
                         }
@@ -882,14 +1039,14 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                     } => {
                         if editing {
                             let val = if selected == 0 {
-                                working_threshold
-                            } else {
                                 working_timeout
+                            } else {
+                                working_threshold
                             };
                             let key = if selected == 0 {
-                                SettingKey::EncoderStepThreshold(encoder)
-                            } else {
                                 SettingKey::EncoderMoveTimeout(encoder)
+                            } else {
+                                SettingKey::EncoderStepThreshold(encoder)
                             };
                             let meta = key.meta();
                             match button {
@@ -901,8 +1058,8 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                                             encoder,
                                             selected,
                                             editing: true,
-                                            working_threshold: new_val,
-                                            working_timeout,
+                                            working_threshold,
+                                            working_timeout: new_val,
                                             original_threshold,
                                             original_timeout,
                                         };
@@ -911,8 +1068,8 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                                             encoder,
                                             selected,
                                             editing: true,
-                                            working_threshold,
-                                            working_timeout: new_val,
+                                            working_threshold: new_val,
+                                            working_timeout,
                                             original_threshold,
                                             original_timeout,
                                         };
@@ -926,8 +1083,8 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                                             encoder,
                                             selected,
                                             editing: true,
-                                            working_threshold: new_val,
-                                            working_timeout,
+                                            working_threshold,
+                                            working_timeout: new_val,
                                             original_threshold,
                                             original_timeout,
                                         };
@@ -936,8 +1093,8 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                                             encoder,
                                             selected,
                                             editing: true,
-                                            working_threshold,
-                                            working_timeout: new_val,
+                                            working_threshold: new_val,
+                                            working_timeout,
                                             original_threshold,
                                             original_timeout,
                                         };
@@ -967,7 +1124,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                                     let new_sel = (selected + 1) % 2;
                                     debug!(
                                         "menu: wiki select {}",
-                                        if new_sel == 0 { "threshold" } else { "timeout" }
+                                        if new_sel == 0 { "timeout" } else { "threshold" }
                                     );
                                     self.state = MenuSubState::WikiEdit {
                                         encoder,
@@ -992,8 +1149,12 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                                     };
                                 }
                                 ButtonCode::CcLeft => {
-                                    debug!("menu: wiki exit");
-                                    self.state = MenuSubState::Browsing;
+                                    if self.settings_changed && !self.prompt_answered_since_change {
+                                        self.state = self.build_save_prompt();
+                                    } else {
+                                        debug!("menu: wiki exit");
+                                        self.state = MenuSubState::Browsing;
+                                    }
                                 }
                                 _ => {}
                             }
@@ -1027,6 +1188,9 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                         debug!("menu: exit pixel test");
                         self.state = MenuSubState::Browsing;
                     }
+                    MenuSubState::Prompt { .. } => {
+                        self.process_event(MenuEvents::Press(button));
+                    }
                     _ => match button {
                         ButtonCode::CcUp | ButtonCode::CcDown => {
                             self.process_event(MenuEvents::Press(button));
@@ -1046,6 +1210,10 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 }
             }
             MenuEvents::Repeat(button) => {
+                if matches!(self.state, MenuSubState::Prompt { .. }) {
+                    self.process_event(MenuEvents::Press(button));
+                    return;
+                }
                 if matches!(self.state, MenuSubState::IdleMode)
                     && matches!(
                         button,
@@ -1094,6 +1262,64 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
     ) {
         let current_state = self.state;
         match current_state {
+            MenuSubState::Prompt {
+                lines,
+                choices,
+                selection,
+            } => {
+                self.display.clear(BinaryColor::Off).unwrap();
+                for (i, line) in lines.iter().enumerate() {
+                    let s = line.as_str();
+                    if !s.is_empty() {
+                        Text::with_baseline(
+                            s,
+                            Point::new(0, LINE_Y[i]),
+                            self.text_style,
+                            Baseline::Top,
+                        )
+                        .draw(self.display)
+                        .unwrap();
+                    }
+                }
+                // Left option
+                Text::with_baseline(
+                    choices[0].label.as_str(),
+                    Point::new(2, LINE_Y[3]),
+                    self.text_style,
+                    Baseline::Top,
+                )
+                .draw(self.display)
+                .unwrap();
+                // Right option
+                let mut right_text = Text::with_alignment(
+                    choices[1].label.as_str(),
+                    Point::new(DISPLAY_R - 2, LINE_Y[3]),
+                    self.text_style,
+                    Alignment::Right,
+                );
+                right_text.text_style.baseline = Baseline::Top;
+                right_text.draw(self.display).unwrap();
+                // Bounding box around the selected option
+                let label = choices[match selection {
+                    PromptSide::First => 0,
+                    PromptSide::Second => 1,
+                }]
+                .label
+                .as_str();
+                let label_width = label.as_bytes().len() as i32 * CHAR_W;
+                let (box_x, box_w) = match selection {
+                    PromptSide::First => (1, label_width + 2),
+                    PromptSide::Second => (DISPLAY_R - 2 - label_width, label_width + 2),
+                };
+                Rectangle::new(
+                    Point::new(box_x, LINE_Y[3] + 1),
+                    Size::new(box_w as u32, 15),
+                )
+                .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+                .draw(self.display)
+                .unwrap();
+                self.display.flush().unwrap();
+            }
             MenuSubState::IdleMode => self.print_debug_display(
                 current_combined_button_state,
                 encoder_p1_count,
@@ -1317,26 +1543,38 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
         // Labels on debug_bufs (left-aligned, odd line indices)
         write!(
             self.debug_bufs[0],
-            "{}P{} Threshold",
+            "{}P{} Timeout",
             if selected == 0 { ">" } else { " " },
             encoder + 1
         )
         .unwrap();
         write!(
             self.debug_bufs[2],
-            "{}P{} Timeout",
+            "{}P{} Threshold",
             if selected == 1 { ">" } else { " " },
             encoder + 1
         )
         .unwrap();
 
         // Values on value_bufs (right-aligned, even line indices)
-        write!(self.value_bufs[0], "{} {}", t_val, t_meta.unit).unwrap();
-        write!(self.value_bufs[1], "{} {}", m_val, m_meta.unit).unwrap();
+        write!(self.value_bufs[0], "{} {}", m_val, m_meta.unit).unwrap();
+        write!(self.value_bufs[1], "{} {}", t_val, t_meta.unit).unwrap();
 
         // Draw
         let color = embedded_graphics::pixelcolor::BinaryColor::Off;
         self.display.clear(color).unwrap();
+
+        // Unsaved-changes indicator
+        if self.settings_changed {
+            Text::with_baseline(
+                "*",
+                Point::new(DISPLAY_R - CHAR_W, 0),
+                self.text_style,
+                Baseline::Top,
+            )
+            .draw(self.display)
+            .unwrap();
+        }
 
         for (i, y) in [(0usize, 0usize), (2, 2)] {
             let s = self.debug_bufs[i].as_str();
@@ -1561,6 +1799,18 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
         let color = embedded_graphics::pixelcolor::BinaryColor::Off;
         self.display.clear(color).unwrap();
 
+        // Unsaved-changes indicator
+        if self.settings_changed {
+            Text::with_baseline(
+                "*",
+                Point::new(DISPLAY_R - CHAR_W, 0),
+                self.text_style,
+                Baseline::Top,
+            )
+            .draw(self.display)
+            .unwrap();
+        }
+
         // Title — left-aligned
         let title = self.title_buf.as_str();
         if !title.is_empty() {
@@ -1653,8 +1903,15 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 self.push_level(level);
             }
             MenuAction::GoBack => {
-                debug!("menu: back");
-                self.pop_level();
+                if self.settings_changed
+                    && !self.prompt_answered_since_change
+                    && self.stack_depth > 1
+                {
+                    self.state = self.build_save_prompt();
+                } else {
+                    debug!("menu: back");
+                    self.pop_level();
+                }
             }
             MenuAction::None => {}
             MenuAction::ShowDebugScreen => {
@@ -1697,6 +1954,55 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                     original_threshold: t_val,
                     original_timeout: m_val,
                 };
+            }
+            MenuAction::SaveAndReboot => {
+                use crate::flash_storage::*;
+                // Signal both cores to enter a safe RAM spin-loop.
+                FLASH_PREPARE_FLAG.store(true, Ordering::SeqCst);
+                // Wait for core0 to acknowledge it's spinning.
+                while !FLASH_CORE0_READY.load(Ordering::SeqCst) {
+                    core::hint::spin_loop();
+                }
+                // Safe to write flash — core0 isn't fetching from XIP.
+                unsafe {
+                    write_storage(&self.settings);
+                }
+                // Release core0 and signal it to reboot.
+                FLASH_PREPARE_FLAG.store(false, Ordering::SeqCst);
+                FLASH_PENDING_REBOOT.store(true, Ordering::SeqCst);
+                // Core0 handles the `sys_reset()` — wait here.
+                loop {
+                    core::hint::spin_loop();
+                }
+            }
+            MenuAction::Discard => {
+                self.pop_level();
+                self.state = MenuSubState::Browsing;
+            }
+            MenuAction::ResetDefaults => {
+                self.state = self.build_reset_prompt();
+            }
+            MenuAction::PerformReset => {
+                use crate::flash_storage::*;
+                FLASH_PREPARE_FLAG.store(true, Ordering::SeqCst);
+                while !FLASH_CORE0_READY.load(Ordering::SeqCst) {
+                    core::hint::spin_loop();
+                }
+                unsafe {
+                    clear_storage(&self.settings);
+                }
+                FLASH_PREPARE_FLAG.store(false, Ordering::SeqCst);
+                FLASH_PENDING_REBOOT.store(true, Ordering::SeqCst);
+                loop {
+                    core::hint::spin_loop();
+                }
+            }
+            MenuAction::Reboot => {
+                use crate::flash_storage::*;
+                FLASH_PENDING_REBOOT.store(true, Ordering::SeqCst);
+                loop {
+                    core::hint::spin_loop();
+                }
             }
         }
     }
@@ -1766,6 +2072,8 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 self.settings.encoders[idx].move_timeout_ticks = value as u64;
             }
         }
+        self.settings_changed = true;
+        self.prompt_answered_since_change = false;
     }
 
     fn read_key_binding(&self, code: ButtonCode) -> u8 {
@@ -1796,5 +2104,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 _ => {}
             }
         }
+        self.settings_changed = true;
+        self.prompt_answered_since_change = false;
     }
 }

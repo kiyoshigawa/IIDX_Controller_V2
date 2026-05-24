@@ -5,14 +5,17 @@
 
 #![no_std]
 
-use core::sync::atomic::AtomicBool;
 use rp235x_hal::gpio::{DynPinId, FunctionSioInput, Pin, PullDown};
 use ssd1306::{Ssd1306, mode::BufferedGraphicsMode, prelude::*};
 use strum::EnumIter;
 use usbd_human_interface_device::page::Keyboard;
 
+pub mod flash_storage;
 pub mod input_handler;
 pub mod menu_handler;
+
+pub use flash_storage::FLASH_STORAGE_BASE_ADDR;
+pub use flash_storage::{ButtonConfig, EncoderConfig, FlashStoragePersistentMemory};
 
 /// Type alias for the OLED display used throughout this project.
 pub type OledDisplay<D> = Ssd1306<D, DisplaySize128x64, BufferedGraphicsMode<DisplaySize128x64>>;
@@ -24,14 +27,6 @@ pub type OledDisplay<D> = Ssd1306<D, DisplaySize128x64, BufferedGraphicsMode<Dis
 /// The frequency of the external clock crystal on the board (12 MHz).
 pub const EXTERNAL_XTAL_FREQ: u32 = 12_000_000;
 
-/// Address in memory of the flash storage dedicated to persistent memory on the chip
-/// Configured in memory.x as 'STORAGE'  -currently 1024K
-pub const FLASH_STORAGE_BASE_ADDR: u32 = 0x10F00000;
-
-/// Flash byte offset (relative to start of flash) for the storage region.
-/// FLASH_STORAGE_BASE_ADDR = 0x10F00000 => offset = 0x00F00000
-pub const FLASH_STORAGE_OFFSET: u32 = 0x00F00000;
-
 /// The number of GPIO pins being used as buttons (both keyboard and control center).
 /// If you go higher than 27, you need to update how the SIO FIFO sends work between cores,
 /// or the 31-27 bits will be eatn by the headers.
@@ -42,13 +37,10 @@ pub const NUM_ENCODERS: usize = 2;
 
 /// Logical buttons (not actual physical single-button-to-GPIO) start at this bit position in the
 /// combined u64 state variable on core1. Physical button bits occupy 0–31.
-pub const LOGICAL_BUTTON_OFFSET: usize = 32;
+const LOGICAL_BUTTON_OFFSET: usize = 32;
 
 /// Default button debounce time in timer ticks (1,000,000 ticks per second).
 pub const DEFAULT_BUTTON_DEBOUNCE_TICKS: u64 = 10_000;
-
-/// Default encoder debounce time in timer ticks (1,000,000 ticks per second).
-pub const DEFAULT_ENCODER_DEBOUNCE_TICKS: u64 = 1_000;
 
 /// USB device tick interval (1 ms per USB spec).
 pub const USB_TICK_INTERVAL_TICKS: u64 = 1_000;
@@ -64,12 +56,6 @@ pub const CORE1_HEARTBEAT_RATE: u64 = 1_000_000 / 3;
 
 /// Min. time in ticks between LED strip refreshes (~144 Hz).
 pub const LED_FRAME_TICKS: u64 = 6_944;
-
-/// Default minimum encoder delta before direction registers (hysteresis threshold).
-pub const DEFAULT_ENCODER_STEP_THRESHOLD: i32 = 20;
-
-/// Default timer ticks of inactivity before releasing the turntable key (100 ms).
-pub const DEFAULT_ENCODER_MOVE_TIMEOUT_TICKS: u64 = 100_000;
 
 /// Idle timeout for encoder counts. If no input change occurs within this
 /// window, the device performs a system reset.
@@ -99,206 +85,6 @@ pub const ENCODER_P2_COUNT_HEADER: u32 = 0b10111;
 /// If you need more physical buttons form the spare pins, you can encode
 /// them in this u32, but you'll need to rework the SIO FIFO logic on both cores
 pub const ENCODER_DIRECTION_HEADER: u32 = 0b10101;
-
-/// Used to note when the persistent storage has been written. This u32 is the
-/// actual header and the second u32 is the bitwise inverse. Flash should erase to
-/// 0xFF for all bytes, so if it matches these values you know it has been initialized.
-pub const FLASH_HEADER: u32 = 0xA5A5A5A5;
-
-/// Used to note when the persistent storage has been written. First u32 is the
-/// actual header and the this u32 is the bitwise inverse. Flash should erase to
-/// 0xFF for all bytes, so if it matches these values you know it has been initialized.
-pub const FLASH_HEADER_INV: u32 = 0x5A5A5A5A;
-
-/// Atomic flag to prevent concurrent flash writes from both cores.
-/// Set to `true` before erasing/programming, cleared to `false` after
-/// the cache flush completes.
-pub static FLASH_WRITE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
-
-/// Per-button configuration stored in flash.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct ButtonConfig {
-    /// USB HID key code (0 = NoEventIndicated, meaning no key).
-    pub key: u8,
-    /// Debounce time in timer ticks (1,000,000 ticks per second).
-    pub debounce_ticks: u64,
-}
-
-/// Per-encoder configuration stored in flash.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct EncoderConfig {
-    /// USB HID key code for clockwise rotation.
-    pub key_up: u8,
-    /// USB HID key code for counter-clockwise rotation.
-    pub key_down: u8,
-    /// Debounce time in timer ticks.
-    pub debounce_ticks: u64,
-    /// Step threshold (hysteresis) for direction detection.
-    pub step_threshold: i32,
-    /// Timer ticks of inactivity before releasing the encoder key.
-    pub move_timeout_ticks: u64,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct FlashStoragePersistentMemory {
-    pub header: u32,
-    pub header_inv: u32,
-    pub buttons: [ButtonConfig; NUM_BUTTONS],
-    pub encoders: [EncoderConfig; NUM_ENCODERS],
-}
-
-impl FlashStoragePersistentMemory {
-    pub fn has_been_written(&self) -> bool {
-        self.header == FLASH_HEADER && self.header_inv == FLASH_HEADER_INV
-    }
-
-    pub fn default() -> Self {
-        // Build the button config array using the current default key mappings.
-        // key=0 means None (no key mapped); they are set explicitly below.
-        let mut buttons = [ButtonConfig {
-            key: 0,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; NUM_BUTTONS];
-
-        // Physical buttons with default key bindings
-        buttons[0] = ButtonConfig {
-            key: Keyboard::Z as u8,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; // P1_1
-        buttons[1] = ButtonConfig {
-            key: Keyboard::S as u8,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; // P1_2
-        buttons[2] = ButtonConfig {
-            key: Keyboard::X as u8,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; // P1_3
-        buttons[3] = ButtonConfig {
-            key: Keyboard::D as u8,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; // P1_4
-        buttons[4] = ButtonConfig {
-            key: Keyboard::C as u8,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; // P1_5
-        buttons[5] = ButtonConfig {
-            key: Keyboard::F as u8,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; // P1_6
-        buttons[6] = ButtonConfig {
-            key: Keyboard::V as u8,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; // P1_7
-        buttons[7] = ButtonConfig {
-            key: Keyboard::Grave as u8,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; // P1_Start
-        buttons[8] = ButtonConfig {
-            key: Keyboard::Keyboard1 as u8,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; // P1_Select
-        buttons[9] = ButtonConfig {
-            key: Keyboard::M as u8,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; // P2_1
-        buttons[10] = ButtonConfig {
-            key: Keyboard::K as u8,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; // P2_2
-        buttons[11] = ButtonConfig {
-            key: Keyboard::Comma as u8,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; // P2_3
-        buttons[12] = ButtonConfig {
-            key: Keyboard::L as u8,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; // P2_4
-        buttons[13] = ButtonConfig {
-            key: Keyboard::Dot as u8,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; // P2_5
-        buttons[14] = ButtonConfig {
-            key: Keyboard::Semicolon as u8,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; // P2_6
-        buttons[15] = ButtonConfig {
-            key: Keyboard::ForwardSlash as u8,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; // P2_7
-        buttons[16] = ButtonConfig {
-            key: Keyboard::DeleteBackspace as u8,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; // P2_Start
-        buttons[17] = ButtonConfig {
-            key: Keyboard::Equal as u8,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; // P2_Select
-        buttons[18] = ButtonConfig {
-            key: Keyboard::Escape as u8,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; // Escape
-        // Center-console buttons have no default USB key, but still need debounce ticks.
-        buttons[19] = ButtonConfig {
-            key: Keyboard::NoEventIndicated as u8,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; // CC_Up
-        buttons[20] = ButtonConfig {
-            key: Keyboard::NoEventIndicated as u8,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; // CC_Down
-        buttons[21] = ButtonConfig {
-            key: Keyboard::NoEventIndicated as u8,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; // CC_Left
-        buttons[22] = ButtonConfig {
-            key: Keyboard::NoEventIndicated as u8,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; // CC_Right
-        buttons[23] = ButtonConfig {
-            key: Keyboard::NoEventIndicated as u8,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; // CC_Select
-        buttons[24] = ButtonConfig {
-            key: Keyboard::VolumeUp as u8,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; // Volume_Up
-        buttons[25] = ButtonConfig {
-            key: Keyboard::VolumeDown as u8,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; // Volume_Down
-        buttons[26] = ButtonConfig {
-            key: Keyboard::Mute as u8,
-            debounce_ticks: DEFAULT_BUTTON_DEBOUNCE_TICKS,
-        }; // Mute
-
-        let encoders = [
-            EncoderConfig {
-                key_up: Keyboard::LeftShift as u8,
-                key_down: Keyboard::LeftControl as u8,
-                debounce_ticks: DEFAULT_ENCODER_DEBOUNCE_TICKS,
-                step_threshold: DEFAULT_ENCODER_STEP_THRESHOLD,
-                move_timeout_ticks: DEFAULT_ENCODER_MOVE_TIMEOUT_TICKS,
-            },
-            EncoderConfig {
-                key_up: Keyboard::RightControl as u8,
-                key_down: Keyboard::RightShift as u8,
-                debounce_ticks: DEFAULT_ENCODER_DEBOUNCE_TICKS,
-                step_threshold: DEFAULT_ENCODER_STEP_THRESHOLD,
-                move_timeout_ticks: DEFAULT_ENCODER_MOVE_TIMEOUT_TICKS,
-            },
-        ];
-
-        Self {
-            header: FLASH_HEADER,
-            header_inv: FLASH_HEADER_INV,
-            buttons,
-            encoders,
-        }
-    }
-}
 
 /// Every input source has a unique code that doubles as a bit offset
 /// into the combined u64 state word on core1.  Physical button codes
