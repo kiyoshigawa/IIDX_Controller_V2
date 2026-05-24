@@ -29,10 +29,12 @@ This is a rust program designed for the [Waveshare Core 2350B](https://www.waves
 	- [x] Lighting Power Control Relay Button
 	- [x] Lighting Configuration Mode Button
 	- [x] JTAG spring pin header for programming/debug
-- [ ] Add additional system control buttons with an OLED screen display to center panel
+- [x] Add additional system control buttons with an OLED screen display to center panel
 	- [ ] Adjustable settings for gameplay in addition to lighting controller control?
-		- [ ] Change encoder step thresholds live and save locally
-		- [ ] debounce time adjustments
+		- [x] Change encoder step thresholds ~~live~~ and save locally
+		- [x] debounce time adjustments
+		- [x] keybindings for all buttons
+		- [ ] Lighting controller config
 		- [ ] Audio DSP adjustments
 
 ## Software:
@@ -59,7 +61,7 @@ This is a rust program designed for the [Waveshare Core 2350B](https://www.waves
 		- [x] Encoder Position Tracking
 		- [x] encoder logic to decide when to send and release keypresses based on count changes
 	- [ ] Second Core (lower priority cosmetic only features)
-		- [ ] System Control menu handling / screen updates
+		- [x] System Control menu handling / screen updates
 		- [ ] Lighting Controller Updates
 		- [ ] Audio DSP and FFT analysis
 		- [x] Data through sio.fifo register from first core:
@@ -103,28 +105,28 @@ This is a rust program designed for the [Waveshare Core 2350B](https://www.waves
 			- [ ] Constant rotation rate
 			- [ ] wiki-aligned rotation
 - [ ] System Control Functionality
-	- [ ] Features:
-	- [ ] New control method (Better, but more work before it's ready):
+	- [x] New control method (Better, but more work before it's ready):
 		- [x] Add dedicated control buttons and screen indicator
 			- [x] https://docs.rs/ssd1306/latest/ssd1306/index.html <- tested and working
 		- [x] will require redoing the center panel on the case to incorporate the new parts/buttons
 		- [ ] Needs feature partiwy with old config functions:
   		- [ ] Change rainbows
       - [ ] Change lighting modes
-    - [ ] New planned features:
-      - [ ] debug input display
-        - [ ] shows what buttons are being pressed live
-        - [ ] encoder position counter values
-        - [ ] encoder key send indicators (shows up send or down send when 'key' is pressed for wikis)
-      - [ ] OLED pixel test (blank screen)
-      - [ ] permanent storage of settings changes in flash
-        - [ ] must be persistent after power cycle/reprogramming.
-      - [ ] key mapping per-button
-      - [ ] timing adjustments
-        - [ ] debounce for each button
-        - [ ] wiki steps/timeouts
-        - [ ] lighting mode durations
-      - [ ] Needs a working menu system allowing access to the features above.
+    - [x] New planned features:
+      - [x] debug input display
+        - [x] shows what buttons are being pressed live
+        - [x] encoder position counter values
+        - [x] encoder key send indicators (shows up send or down send when 'key' is pressed for wikis)
+      - [x] OLED pixel test (blank screen)
+      - [x] permanent storage of settings changes in flash
+        - [x] must be persistent after power cycle/reprogramming.
+      - [x] key mapping per-button
+      - [x] timing adjustments
+        - [x] debounce for each button
+        - [x] wiki steps/timeouts
+        - [x] lighting mode durations
+      - [x] Needs a working menu system allowing access to the features above.
+      - [ ] idle animations to show on oled when not in menus
 	- [ ] ~~Old method (was originally the MVP, Skipped straight to feature creep, lol)~~:
 		- [ ] ~~Single button switches to control mode~~
   	- [ ] ~~The gameplay buttons then change things when pressed~~

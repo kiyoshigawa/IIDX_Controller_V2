@@ -215,8 +215,6 @@ enum MenuAction {
     EditKeyBinding(ButtonCode),
     /// Open the dedicated encoder-editing screen for wiki sensitivity.
     OpenWikiEdit(usize),
-    /// Visible but non-functional — reserved for future features.
-    None,
     /// Save current settings to flash and reboot the chip.
     SaveAndReboot,
     /// Dismiss the save prompt without saving.
@@ -227,6 +225,8 @@ enum MenuAction {
     PerformReset,
     /// Reboot the chip without saving or clearing settings.
     Reboot,
+    /// Visible but non-functional
+    None,
 }
 
 /// Which of the two choices in a `Prompt` is currently selected.
@@ -1245,7 +1245,10 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 }
             }
             MenuEvents::Idle => {
-                if !matches!(self.state, MenuSubState::IdleMode) {
+                if !matches!(
+                    self.state,
+                    MenuSubState::IdleMode | MenuSubState::DisplayMode(_)
+                ) {
                     debug!("menu: idle");
                     self.saved_state = self.state;
                     self.state = MenuSubState::IdleMode;
