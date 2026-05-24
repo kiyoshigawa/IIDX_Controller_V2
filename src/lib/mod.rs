@@ -128,6 +128,45 @@ pub enum ButtonCode {
     P2Negative = LOGICAL_BUTTON_OFFSET + 3,
 }
 
+impl ButtonCode {
+    /// Short human-readable label for this button (OLED-safe length).
+    pub fn short_label(&self) -> &'static str {
+        match self {
+            Self::P1_1 => "P1_1",
+            Self::P1_2 => "P1_2",
+            Self::P1_3 => "P1_3",
+            Self::P1_4 => "P1_4",
+            Self::P1_5 => "P1_5",
+            Self::P1_6 => "P1_6",
+            Self::P1_7 => "P1_7",
+            Self::P1Start => "P1_St",
+            Self::P1Select => "P1_Sl",
+            Self::P2_1 => "P2_1",
+            Self::P2_2 => "P2_2",
+            Self::P2_3 => "P2_3",
+            Self::P2_4 => "P2_4",
+            Self::P2_5 => "P2_5",
+            Self::P2_6 => "P2_6",
+            Self::P2_7 => "P2_7",
+            Self::P2Start => "P2_St",
+            Self::P2Select => "P2_Sl",
+            Self::Escape => "Esc",
+            Self::CcUp => "CC_Up",
+            Self::CcDown => "CC_Dn",
+            Self::CcLeft => "CC_Lt",
+            Self::CcRight => "CC_Rt",
+            Self::CcSelect => "CC_Sl",
+            Self::VolumeUp => "V_Up",
+            Self::VolumeDown => "V_Dn",
+            Self::Mute => "Mute",
+            Self::P1Positive => "Enc1+",
+            Self::P1Negative => "Enc1-",
+            Self::P2Positive => "Enc2+",
+            Self::P2Negative => "Enc2-",
+        }
+    }
+}
+
 /// Direction of turntable rotation.
 #[derive(Clone, Copy, PartialEq)]
 #[repr(u8)]

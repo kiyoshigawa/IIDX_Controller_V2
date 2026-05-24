@@ -200,6 +200,52 @@ enum SettingKey {
     EncoderMoveTimeout(usize),
 }
 
+/// A generic editor bound to a specific value type.  New editor types (e.g.
+/// pattern selection or bool toggles) can be uncommented here without
+/// touching [`MenuSubState`] or the event-dispatch machinery.
+#[derive(Clone, Copy)]
+enum Editor {
+    IntRange {
+        value: u32,
+        step: u32,
+        min: u32,
+        max: u32,
+        divisor: u32,
+        unit: &'static str,
+    },
+    // OptionSelect {
+    //     labels: &'static [&'static str],
+    //     current: usize,
+    // },
+    // BoolToggle(bool),
+}
+
+/// Describes what to write back when an [`Editor`] is committed.
+#[derive(Clone, Copy)]
+enum Commit {
+    Setting(SettingKey),
+    // NoOp,
+}
+
+/// Keys whose value can be edited via [`Editor::IntRange`].  Maps 1:1 to
+/// [`SettingKey`] entries that have a [`SettingMeta`].
+#[derive(Clone, Copy)]
+enum ValueKey {
+    AllButtonDebounce,
+    ButtonDebounce(ButtonCode),
+    EncoderDebounce(usize),
+}
+
+impl From<ValueKey> for SettingKey {
+    fn from(vk: ValueKey) -> Self {
+        match vk {
+            ValueKey::AllButtonDebounce => SettingKey::AllButtonDebounce,
+            ValueKey::ButtonDebounce(c) => SettingKey::ButtonDebounce(c),
+            ValueKey::EncoderDebounce(i) => SettingKey::EncoderDebounce(i),
+        }
+    }
+}
+
 /// What happens when a menu option is activated
 #[derive(Clone, Copy)]
 enum MenuAction {
@@ -210,7 +256,7 @@ enum MenuAction {
     /// Switch to pixel-fill test mode (any key exits).
     ShowPixelTest,
     /// Enter in-place value adjustment for a named setting.
-    EditSetting(SettingKey),
+    EditValue(ValueKey),
     /// Enter key-binding cycle for a physical button or encoder direction.
     EditKeyBinding(ButtonCode),
     /// Open the dedicated encoder-editing screen for wiki sensitivity.
@@ -235,6 +281,105 @@ enum MenuAction {
     None,
 }
 
+/// Describes a single field in [`FlashStoragePersistentMemory`] that differs
+/// from its factory-default value. Used by [`for_each_changed_field`] to
+/// unify the iteration pattern across counting, formatting, and display.
+#[derive(Clone, Copy)]
+enum FieldDescriptor {
+    ButtonDebounce(usize),
+    ButtonKey(usize),
+    EncoderKeyUp(usize),
+    EncoderKeyDown(usize),
+    EncoderDebounce(usize),
+    EncoderStepThreshold(usize),
+    EncoderMoveTimeout(usize),
+}
+
+impl FieldDescriptor {
+    fn section_title(&self) -> &'static str {
+        match self {
+            Self::ButtonDebounce(_) => "Button Debounce",
+            Self::ButtonKey(_) => "Button Keys",
+            Self::EncoderKeyUp(_) | Self::EncoderKeyDown(_) => "Encoder Keys",
+            Self::EncoderDebounce(_) => "Encoder Debounce",
+            Self::EncoderStepThreshold(_) => "Encoder Threshold",
+            Self::EncoderMoveTimeout(_) => "Encoder Timeout",
+        }
+    }
+}
+
+/// Walk every field in [`FlashStoragePersistentMemory`] in a fixed order,
+/// calling `f(field, current_value, default_value)` for each field that
+/// differs from its factory default.  `f` returns `true` to continue or
+/// `false` to stop early.
+///
+/// Returns the total number of changed fields (the number of calls made to `f`
+/// unless iteration was stopped early).
+fn for_each_changed_field(
+    settings: &FlashStoragePersistentMemory,
+    defaults: &FlashStoragePersistentMemory,
+    mut f: impl FnMut(FieldDescriptor, u64, u64) -> bool,
+) -> usize {
+    let mut count = 0;
+
+    macro_rules! check {
+        ($current:expr, $default:expr, $desc:expr) => {
+            let cur = $current as u64;
+            let def = $default as u64;
+            if cur != def {
+                if !f($desc, cur, def) {
+                    return count + 1;
+                }
+                count += 1;
+            }
+        };
+    }
+
+    for b in 0..NUM_BUTTONS {
+        check!(
+            settings.buttons[b].debounce_ticks,
+            defaults.buttons[b].debounce_ticks,
+            FieldDescriptor::ButtonDebounce(b)
+        );
+    }
+    for b in 0..NUM_BUTTONS {
+        check!(
+            settings.buttons[b].key,
+            defaults.buttons[b].key,
+            FieldDescriptor::ButtonKey(b)
+        );
+    }
+    for e in 0..NUM_ENCODERS {
+        check!(
+            settings.encoders[e].key_up,
+            defaults.encoders[e].key_up,
+            FieldDescriptor::EncoderKeyUp(e)
+        );
+        check!(
+            settings.encoders[e].key_down,
+            defaults.encoders[e].key_down,
+            FieldDescriptor::EncoderKeyDown(e)
+        );
+        check!(
+            settings.encoders[e].debounce_ticks,
+            defaults.encoders[e].debounce_ticks,
+            FieldDescriptor::EncoderDebounce(e)
+        );
+        check!(
+            settings.encoders[e].step_threshold,
+            defaults.encoders[e].step_threshold,
+            FieldDescriptor::EncoderStepThreshold(e)
+        );
+        check!(
+            settings.encoders[e].move_timeout_ticks,
+            defaults.encoders[e].move_timeout_ticks,
+            FieldDescriptor::EncoderMoveTimeout(e)
+        );
+    }
+
+    count
+}
+
 /// Which of the two choices in a `Prompt` is currently selected.
 #[derive(Clone, Copy)]
 enum PromptSide {
@@ -249,30 +394,38 @@ struct PromptChoice {
     label: FmtBuf,
 }
 
+/// Encoder wiki-editing state, extracted into its own struct to avoid
+/// verbose field-by-field reconstruction inside match arms.
+//
+// `original_*` fields are preserved through `..*w` struct-update syntax,
+// not read individually, hence the dead_code allow.
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+struct WikiEditState {
+    encoder: usize,
+    selected: usize,
+    editing: bool,
+    working_threshold: u32,
+    working_timeout: u32,
+    original_threshold: u32,
+    original_timeout: u32,
+}
+
 /// Top-level state machine controlling what the handler does with inputs
 /// and how it renders the screen.
 #[derive(Clone, Copy)]
 enum MenuSubState {
     Browsing,
-    EditingValue {
-        setting: SettingKey,
-        original_value: u32,
-        working_value: u32,
+    Editing {
+        editor: Editor,
+        commit: Commit,
     },
     EditingKeyBinding {
         button: ButtonCode,
         working_key_idx: usize,
         original_key_idx: usize,
     },
-    WikiEdit {
-        encoder: usize,
-        selected: usize,
-        editing: bool,
-        working_threshold: u32,
-        working_timeout: u32,
-        original_threshold: u32,
-        original_timeout: u32,
-    },
+    WikiEdit(WikiEditState),
     DisplayMode(MenuMode),
     IdleMode,
     /// General-purpose confirmation prompt with up to 3 lines of text
@@ -286,6 +439,50 @@ enum MenuSubState {
     ShowCustom {
         cursor: usize,
     },
+}
+
+/// Increment or decrement `val` by `step`, clamping to [`min`, `max`].
+fn clamp_step(val: u32, step: u32, min: u32, max: u32, up: bool) -> u32 {
+    if up {
+        val.saturating_add(step).clamp(min, max)
+    } else {
+        val.saturating_sub(step).clamp(min, max)
+    }
+}
+
+/// Build an [`Editor`] + [`Commit`] pair for a [`ValueKey`] by reading the
+/// current value from `settings` and looking up the adjustment metadata.
+fn build_editor(settings: &FlashStoragePersistentMemory, vk: ValueKey) -> (Editor, Commit) {
+    let key: SettingKey = vk.into();
+    let meta = key.meta();
+    let value = match key {
+        SettingKey::AllButtonDebounce => settings.buttons[0].debounce_ticks as u32,
+        SettingKey::ButtonDebounce(code) => settings.buttons[code as usize].debounce_ticks as u32,
+        SettingKey::EncoderDebounce(idx) => settings.encoders[idx].debounce_ticks as u32,
+        // The remaining SettingKey variants are never constructed through
+        // ValueKey (they are used only via WikiEdit or AllButtonDebounce
+        // code path), but the match must be exhaustive:
+        SettingKey::EncoderStepThreshold(_) | SettingKey::EncoderMoveTimeout(_) => 0,
+    };
+    let editor = Editor::IntRange {
+        value,
+        step: meta.step,
+        min: meta.min,
+        max: meta.max,
+        divisor: meta.divisor,
+        unit: meta.unit,
+    };
+    (editor, Commit::Setting(key))
+}
+
+/// Execute a [`Commit`] by writing `value` into the appropriate field.
+impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
+    fn commit_edit(&mut self, commit: Commit, value: u32) {
+        match commit {
+            Commit::Setting(key) => self.write_setting(key, value),
+            // Commit::NoOp => {}
+        }
+    }
 }
 
 /// Returns the [`Flip`] orientation required for a given encoder
@@ -344,12 +541,12 @@ static ROOT_MENU: MenuLevel = MenuLevel {
             action: MenuAction::None,
         },
         MenuOption {
-            label: "Settings",
-            action: MenuAction::OpenSubmenu(&SETTINGS_MENU),
-        },
-        MenuOption {
             label: "Debug",
             action: MenuAction::OpenSubmenu(&DEBUG_MENU),
+        },
+        MenuOption {
+            label: "Settings",
+            action: MenuAction::OpenSubmenu(&SETTINGS_MENU),
         },
         MenuOption {
             label: "System",
@@ -362,16 +559,16 @@ static SETTINGS_MENU: MenuLevel = MenuLevel {
     title: "Settings",
     options: &[
         MenuOption {
-            label: "Debounce",
-            action: MenuAction::OpenSubmenu(&DEBOUNCE_MENU),
+            label: "Wiki Config",
+            action: MenuAction::OpenSubmenu(&ENCODER_SENS_MENU),
         },
         MenuOption {
             label: "Key Bindings",
             action: MenuAction::OpenSubmenu(&KEYBIND_MENU),
         },
         MenuOption {
-            label: "Wiki Config",
-            action: MenuAction::OpenSubmenu(&ENCODER_SENS_MENU),
+            label: "Debounce",
+            action: MenuAction::OpenSubmenu(&DEBOUNCE_MENU),
         },
         MenuOption {
             label: "Back",
@@ -406,16 +603,16 @@ static SYSTEM_MENU: MenuLevel = MenuLevel {
             action: MenuAction::SaveAndReboot,
         },
         MenuOption {
+            label: "Show Custom",
+            action: MenuAction::ShowCustom,
+        },
+        MenuOption {
             label: "ResetDefault",
             action: MenuAction::ResetDefaults,
         },
         MenuOption {
             label: "Reboot",
             action: MenuAction::Reboot,
-        },
-        MenuOption {
-            label: "Show Custom",
-            action: MenuAction::ShowCustom,
         },
         MenuOption {
             label: "Back",
@@ -442,249 +639,96 @@ static ENCODER_SENS_MENU: MenuLevel = MenuLevel {
     ],
 };
 
-static DEBOUNCE_MENU: MenuLevel = MenuLevel {
-    title: "Debounce",
-    options: &[
-        MenuOption {
-            label: "All",
-            action: MenuAction::EditSetting(SettingKey::AllButtonDebounce),
-        },
-        MenuOption {
-            label: "P1_1",
-            action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::P1_1)),
-        },
-        MenuOption {
-            label: "P1_2",
-            action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::P1_2)),
-        },
-        MenuOption {
-            label: "P1_3",
-            action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::P1_3)),
-        },
-        MenuOption {
-            label: "P1_4",
-            action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::P1_4)),
-        },
-        MenuOption {
-            label: "P1_5",
-            action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::P1_5)),
-        },
-        MenuOption {
-            label: "P1_6",
-            action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::P1_6)),
-        },
-        MenuOption {
-            label: "P1_7",
-            action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::P1_7)),
-        },
-        MenuOption {
-            label: "P1Start",
-            action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::P1Start)),
-        },
-        MenuOption {
-            label: "P1Sel",
-            action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::P1Select)),
-        },
-        MenuOption {
-            label: "P2_1",
-            action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::P2_1)),
-        },
-        MenuOption {
-            label: "P2_2",
-            action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::P2_2)),
-        },
-        MenuOption {
-            label: "P2_3",
-            action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::P2_3)),
-        },
-        MenuOption {
-            label: "P2_4",
-            action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::P2_4)),
-        },
-        MenuOption {
-            label: "P2_5",
-            action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::P2_5)),
-        },
-        MenuOption {
-            label: "P2_6",
-            action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::P2_6)),
-        },
-        MenuOption {
-            label: "P2_7",
-            action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::P2_7)),
-        },
-        MenuOption {
-            label: "P2Start",
-            action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::P2Start)),
-        },
-        MenuOption {
-            label: "P2Sel",
-            action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::P2Select)),
-        },
-        MenuOption {
-            label: "Escape",
-            action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::Escape)),
-        },
-        MenuOption {
-            label: "CcUp",
-            action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::CcUp)),
-        },
-        MenuOption {
-            label: "CcDown",
-            action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::CcDown)),
-        },
-        MenuOption {
-            label: "CcLeft",
-            action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::CcLeft)),
-        },
-        MenuOption {
-            label: "CcRight",
-            action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::CcRight)),
-        },
-        MenuOption {
-            label: "CcSel",
-            action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::CcSelect)),
-        },
-        MenuOption {
-            label: "VolUp",
-            action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::VolumeUp)),
-        },
-        MenuOption {
-            label: "VolDn",
-            action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::VolumeDown)),
-        },
-        MenuOption {
-            label: "Mute",
-            action: MenuAction::EditSetting(SettingKey::ButtonDebounce(ButtonCode::Mute)),
-        },
-        MenuOption {
-            label: "Enc1",
-            action: MenuAction::EditSetting(SettingKey::EncoderDebounce(0)),
-        },
-        MenuOption {
-            label: "Enc2",
-            action: MenuAction::EditSetting(SettingKey::EncoderDebounce(1)),
-        },
-        MenuOption {
-            label: "Back",
-            action: MenuAction::GoBack,
-        },
-    ],
-};
+macro_rules! define_button_menus {
+    ($(($code:ident, $label:expr)),* $(,)?) => {
+        static DEBOUNCE_MENU: MenuLevel = MenuLevel {
+            title: "Debounce",
+            options: &[
+                MenuOption {
+                    label: "All",
+                    action: MenuAction::EditValue(ValueKey::AllButtonDebounce),
+                },
+                $(MenuOption {
+                    label: $label,
+                    action: MenuAction::EditValue(ValueKey::ButtonDebounce(ButtonCode::$code)),
+                }),*,
+                MenuOption {
+                    label: "Enc1",
+                    action: MenuAction::EditValue(ValueKey::EncoderDebounce(0)),
+                },
+                MenuOption {
+                    label: "Enc2",
+                    action: MenuAction::EditValue(ValueKey::EncoderDebounce(1)),
+                },
+                MenuOption {
+                    label: "Back",
+                    action: MenuAction::GoBack,
+                },
+            ],
+        };
 
-static KEYBIND_MENU: MenuLevel = MenuLevel {
-    title: "Key Bindings",
-    options: &[
-        MenuOption {
-            label: "P1_1",
-            action: MenuAction::EditKeyBinding(ButtonCode::P1_1),
-        },
-        MenuOption {
-            label: "P1_2",
-            action: MenuAction::EditKeyBinding(ButtonCode::P1_2),
-        },
-        MenuOption {
-            label: "P1_3",
-            action: MenuAction::EditKeyBinding(ButtonCode::P1_3),
-        },
-        MenuOption {
-            label: "P1_4",
-            action: MenuAction::EditKeyBinding(ButtonCode::P1_4),
-        },
-        MenuOption {
-            label: "P1_5",
-            action: MenuAction::EditKeyBinding(ButtonCode::P1_5),
-        },
-        MenuOption {
-            label: "P1_6",
-            action: MenuAction::EditKeyBinding(ButtonCode::P1_6),
-        },
-        MenuOption {
-            label: "P1_7",
-            action: MenuAction::EditKeyBinding(ButtonCode::P1_7),
-        },
-        MenuOption {
-            label: "P1Start",
-            action: MenuAction::EditKeyBinding(ButtonCode::P1Start),
-        },
-        MenuOption {
-            label: "P1Sel",
-            action: MenuAction::EditKeyBinding(ButtonCode::P1Select),
-        },
-        MenuOption {
-            label: "P2_1",
-            action: MenuAction::EditKeyBinding(ButtonCode::P2_1),
-        },
-        MenuOption {
-            label: "P2_2",
-            action: MenuAction::EditKeyBinding(ButtonCode::P2_2),
-        },
-        MenuOption {
-            label: "P2_3",
-            action: MenuAction::EditKeyBinding(ButtonCode::P2_3),
-        },
-        MenuOption {
-            label: "P2_4",
-            action: MenuAction::EditKeyBinding(ButtonCode::P2_4),
-        },
-        MenuOption {
-            label: "P2_5",
-            action: MenuAction::EditKeyBinding(ButtonCode::P2_5),
-        },
-        MenuOption {
-            label: "P2_6",
-            action: MenuAction::EditKeyBinding(ButtonCode::P2_6),
-        },
-        MenuOption {
-            label: "P2_7",
-            action: MenuAction::EditKeyBinding(ButtonCode::P2_7),
-        },
-        MenuOption {
-            label: "P2Start",
-            action: MenuAction::EditKeyBinding(ButtonCode::P2Start),
-        },
-        MenuOption {
-            label: "P2Sel",
-            action: MenuAction::EditKeyBinding(ButtonCode::P2Select),
-        },
-        MenuOption {
-            label: "Escape",
-            action: MenuAction::EditKeyBinding(ButtonCode::Escape),
-        },
-        MenuOption {
-            label: "VolUp",
-            action: MenuAction::EditKeyBinding(ButtonCode::VolumeUp),
-        },
-        MenuOption {
-            label: "VolDn",
-            action: MenuAction::EditKeyBinding(ButtonCode::VolumeDown),
-        },
-        MenuOption {
-            label: "Mute",
-            action: MenuAction::EditKeyBinding(ButtonCode::Mute),
-        },
-        MenuOption {
-            label: "Enc1+",
-            action: MenuAction::EditKeyBinding(ButtonCode::P1Positive),
-        },
-        MenuOption {
-            label: "Enc1-",
-            action: MenuAction::EditKeyBinding(ButtonCode::P1Negative),
-        },
-        MenuOption {
-            label: "Enc2+",
-            action: MenuAction::EditKeyBinding(ButtonCode::P2Positive),
-        },
-        MenuOption {
-            label: "Enc2-",
-            action: MenuAction::EditKeyBinding(ButtonCode::P2Negative),
-        },
-        MenuOption {
-            label: "Back",
-            action: MenuAction::GoBack,
-        },
-    ],
-};
+        static KEYBIND_MENU: MenuLevel = MenuLevel {
+            title: "Key Bindings",
+            options: &[
+                $(MenuOption {
+                    label: $label,
+                    action: MenuAction::EditKeyBinding(ButtonCode::$code),
+                }),*,
+                MenuOption {
+                    label: "Enc1+",
+                    action: MenuAction::EditKeyBinding(ButtonCode::P1Positive),
+                },
+                MenuOption {
+                    label: "Enc1-",
+                    action: MenuAction::EditKeyBinding(ButtonCode::P1Negative),
+                },
+                MenuOption {
+                    label: "Enc2+",
+                    action: MenuAction::EditKeyBinding(ButtonCode::P2Positive),
+                },
+                MenuOption {
+                    label: "Enc2-",
+                    action: MenuAction::EditKeyBinding(ButtonCode::P2Negative),
+                },
+                MenuOption {
+                    label: "Back",
+                    action: MenuAction::GoBack,
+                },
+            ],
+        };
+    };
+}
+
+define_button_menus! {
+    // Labels derived from ButtonCode::short_label() — single source of truth
+    (P1_1, "P1_1"),
+    (P1_2, "P1_2"),
+    (P1_3, "P1_3"),
+    (P1_4, "P1_4"),
+    (P1_5, "P1_5"),
+    (P1_6, "P1_6"),
+    (P1_7, "P1_7"),
+    (P1Start, "P1_St"),
+    (P1Select, "P1_Sl"),
+    (P2_1, "P2_1"),
+    (P2_2, "P2_2"),
+    (P2_3, "P2_3"),
+    (P2_4, "P2_4"),
+    (P2_5, "P2_5"),
+    (P2_6, "P2_6"),
+    (P2_7, "P2_7"),
+    (P2Start, "P2_St"),
+    (P2Select, "P2_Sl"),
+    (Escape, "Esc"),
+    (CcUp, "CC_Up"),
+    (CcDown, "CC_Dn"),
+    (CcLeft, "CC_Lt"),
+    (CcRight, "CC_Rt"),
+    (CcSelect, "CC_Sl"),
+    (VolumeUp, "V_Up"),
+    (VolumeDown, "V_Dn"),
+    (Mute, "Mute"),
+}
 
 /// A tiny fixed-size buffer for formatting a single short line of text
 /// (up to [`BUF_SIZE`] bytes) before drawing it to the OLED.
@@ -847,78 +891,45 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
         }
     }
 
-    /// Construct a `Prompt` state asking the user whether to save changed settings.
-    fn build_save_prompt(&mut self) -> MenuSubState {
-        let mut lines = [FmtBuf::new(); 3];
-        core::write!(lines[0], "Save changes").ok();
-        core::write!(lines[1], "to flash and").ok();
-        core::write!(lines[2], "reboot?").ok();
-        let mut no_label = FmtBuf::new();
-        core::write!(no_label, "No").ok();
-        let mut yes_label = FmtBuf::new();
-        core::write!(yes_label, "Yes").ok();
-        MenuSubState::Prompt {
-            lines,
-            choices: [
-                PromptChoice {
-                    action: MenuAction::Discard,
-                    label: no_label,
-                },
-                PromptChoice {
-                    action: MenuAction::SaveAndReboot,
-                    label: yes_label,
-                },
-            ],
-            selection: PromptSide::Second,
+    /// If settings have changed since the last prompt dismissal, show the save
+    /// prompt; otherwise run `fallback`.
+    fn prompt_if_unsaved(&mut self, fallback: impl FnOnce(&mut Self)) {
+        if self.settings_changed && !self.prompt_answered_since_change {
+            self.state = Self::build_prompt(
+                ["Save changes", "to flash and", "reboot?"],
+                MenuAction::SaveAndReboot,
+                MenuAction::Discard,
+            );
+        } else {
+            fallback(self);
         }
     }
 
-    /// Construct a `Prompt` state asking the user to confirm factory reset.
-    fn build_reset_prompt(&mut self) -> MenuSubState {
-        let mut lines = [FmtBuf::new(); 3];
-        core::write!(lines[0], "This restores").ok();
-        core::write!(lines[1], "ALL changes").ok();
-        core::write!(lines[2], "back to base!").ok();
-        let mut no_label = FmtBuf::new();
-        core::write!(no_label, "No").ok();
-        let mut yes_label = FmtBuf::new();
-        core::write!(yes_label, "Yes").ok();
-        MenuSubState::Prompt {
-            lines,
-            choices: [
-                PromptChoice {
-                    action: MenuAction::Discard,
-                    label: no_label,
-                },
-                PromptChoice {
-                    action: MenuAction::PerformReset,
-                    label: yes_label,
-                },
-            ],
-            selection: PromptSide::First,
+    /// Construct a `Prompt` with two choices: "Yes" (left, non-default) and "No"
+    /// (right, pre-selected = default).
+    fn build_prompt(
+        lines: [&str; 3],
+        yes_action: MenuAction,
+        no_action: MenuAction,
+    ) -> MenuSubState {
+        let mut buf_lines = [FmtBuf::new(); 3];
+        for (i, text) in lines.iter().enumerate() {
+            core::write!(buf_lines[i], "{}", text).ok();
         }
-    }
-
-    /// Construct a `Prompt` asking whether to reset one value back to its default.
-    fn build_reset_value_prompt(&mut self, change_idx: usize) -> MenuSubState {
-        let mut lines = [FmtBuf::new(); 3];
-        core::write!(lines[0], "Reset value").ok();
-        core::write!(lines[1], "to default").ok();
-        core::write!(lines[2], "state?").ok();
-        let mut no_label = FmtBuf::new();
-        core::write!(no_label, "No").ok();
         let mut yes_label = FmtBuf::new();
         core::write!(yes_label, "Yes").ok();
+        let mut no_label = FmtBuf::new();
+        core::write!(no_label, "No").ok();
         MenuSubState::Prompt {
-            lines,
+            lines: buf_lines,
             choices: [
                 PromptChoice {
-                    action: MenuAction::ReturnToCustom,
-                    label: no_label,
+                    action: yes_action,
+                    label: yes_label,
                 },
                 PromptChoice {
-                    action: MenuAction::ResetField(change_idx),
-                    label: yes_label,
+                    action: no_action,
+                    label: no_label,
                 },
             ],
             selection: PromptSide::Second,
@@ -927,440 +938,434 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
 
     pub fn process_event(&mut self, event: MenuEvents) {
         match event {
-            MenuEvents::Press(button) => {
-                let current_state = self.state;
-                match current_state {
-                    MenuSubState::Prompt {
-                        lines,
-                        choices,
-                        selection,
-                    } => match button {
-                        ButtonCode::CcUp
+            MenuEvents::Press(button) => self.dispatch_press(button),
+            MenuEvents::LongPress(button) => self.dispatch_long_press(button),
+            MenuEvents::Repeat(button) => self.dispatch_repeat(button),
+            MenuEvents::Idle => self.dispatch_idle(),
+        }
+    }
+
+    fn dispatch_press(&mut self, button: ButtonCode) {
+        match self.state {
+            MenuSubState::Prompt { .. } => self.on_prompt_press(button),
+            MenuSubState::ShowCustom { cursor } => self.on_custom_press(cursor, button),
+            MenuSubState::IdleMode => self.on_idle_press(button),
+            MenuSubState::DisplayMode(MenuMode::Debug) => {}
+            MenuSubState::DisplayMode(MenuMode::PixelTest) => self.on_pixel_press(button),
+            MenuSubState::Browsing => self.on_browsing_press(button),
+            MenuSubState::Editing { .. } => self.on_editing_press(button),
+            MenuSubState::EditingKeyBinding { .. } => self.on_keybinding_press(button),
+            MenuSubState::WikiEdit(ref w) => {
+                let wiki_state = *w;
+                self.on_wiki_press(&wiki_state, button);
+            }
+        }
+    }
+
+    fn dispatch_long_press(&mut self, button: ButtonCode) {
+        match self.state {
+            MenuSubState::IdleMode => self.on_idle_long_press(button),
+            MenuSubState::DisplayMode(MenuMode::Debug) => self.on_debug_long_press(button),
+            MenuSubState::DisplayMode(MenuMode::PixelTest) => self.on_pixel_long_press(button),
+            MenuSubState::Prompt { .. } => {} // press-and-hold must not re-trigger prompt selection
+            MenuSubState::ShowCustom { .. } => {
+                self.process_event(MenuEvents::Press(button));
+            }
+            _ => self.handle_repeat_as_press(button),
+        }
+    }
+
+    fn dispatch_repeat(&mut self, button: ButtonCode) {
+        match self.state {
+            MenuSubState::Prompt { .. } => {} // repeat must not re-trigger prompt selection
+            MenuSubState::ShowCustom { .. } => {
+                self.process_event(MenuEvents::Press(button));
+            }
+            MenuSubState::IdleMode
+                if matches!(
+                    button,
+                    ButtonCode::CcUp
                         | ButtonCode::CcDown
                         | ButtonCode::CcLeft
-                        | ButtonCode::CcRight => {
-                            let new_sel = match selection {
-                                PromptSide::First => PromptSide::Second,
-                                PromptSide::Second => PromptSide::First,
-                            };
-                            self.state = MenuSubState::Prompt {
-                                lines,
-                                choices,
-                                selection: new_sel,
-                            };
-                        }
-                        ButtonCode::CcSelect => {
-                            self.prompt_answered_since_change = true;
-                            let action = match selection {
-                                PromptSide::First => choices[0].action,
-                                PromptSide::Second => choices[1].action,
-                            };
-                            self.execute_action(action);
-                        }
-                        _ => {}
-                    },
-                    MenuSubState::ShowCustom { cursor } => {
-                        let change_count = self.count_changes();
-                        if change_count == 0 {
-                            self.state = MenuSubState::Browsing;
-                            return;
-                        }
-                        match button {
-                            ButtonCode::CcLeft => {
-                                if self.settings_changed
-                                    && !self.prompt_answered_since_change
-                                    && self.stack_depth > 1
-                                {
-                                    self.state = self.build_save_prompt();
-                                } else {
-                                    self.state = MenuSubState::Browsing;
-                                }
-                            }
-                            ButtonCode::CcUp => {
-                                let new_cursor = (cursor + change_count - 1) % change_count;
-                                self.state = MenuSubState::ShowCustom { cursor: new_cursor };
-                            }
-                            ButtonCode::CcDown => {
-                                let new_cursor = (cursor + 1) % change_count;
-                                self.state = MenuSubState::ShowCustom { cursor: new_cursor };
-                            }
-                            ButtonCode::CcRight | ButtonCode::CcSelect => {
-                                self.state = self.build_reset_value_prompt(cursor);
-                            }
-                            _ => {}
-                        }
-                    }
-                    MenuSubState::IdleMode => {
-                        if matches!(
-                            button,
-                            ButtonCode::CcUp
-                                | ButtonCode::CcDown
-                                | ButtonCode::CcLeft
-                                | ButtonCode::CcRight
-                                | ButtonCode::CcSelect
-                        ) {
-                            debug!("menu: exit idle");
-                            self.state = self.saved_state;
-                        }
-                    }
-                    MenuSubState::DisplayMode(MenuMode::Debug) => {
-                        // Short press does nothing in debug mode.
-                        // Exit requires a long press (handled in LongPress arm).
-                    }
-                    MenuSubState::DisplayMode(MenuMode::PixelTest) => {
-                        debug!("menu: exit pixel test");
-                        self.state = MenuSubState::Browsing;
-                    }
-                    MenuSubState::Browsing => {
-                        let level = self.current_level();
-                        let cursor = self.current_cursor();
-                        match button {
-                            ButtonCode::CcUp => {
-                                let len = level.options.len();
-                                let new_cursor = (cursor + len - 1) % len;
-                                debug!("menu: cursor up → {}", new_cursor);
-                                *self.current_cursor_mut() = new_cursor;
-                            }
-                            ButtonCode::CcDown => {
-                                let len = level.options.len();
-                                let new_cursor = (cursor + 1) % len;
-                                debug!("menu: cursor down → {}", new_cursor);
-                                *self.current_cursor_mut() = new_cursor;
-                            }
-                            ButtonCode::CcSelect | ButtonCode::CcRight => {
-                                self.execute_action(level.options[cursor].action);
-                            }
-                            ButtonCode::CcLeft => {
-                                if self.settings_changed
-                                    && !self.prompt_answered_since_change
-                                    && self.stack_depth > 1
-                                {
-                                    self.state = self.build_save_prompt();
-                                } else {
-                                    self.pop_level();
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    MenuSubState::EditingValue {
-                        setting,
-                        original_value,
-                        working_value,
-                    } => {
-                        let meta = setting.meta();
-                        match button {
-                            ButtonCode::CcLeft | ButtonCode::CcDown => {
-                                let new_val = working_value
-                                    .saturating_sub(meta.step)
-                                    .clamp(meta.min, meta.max);
-                                if new_val != working_value {
-                                    debug!(
-                                        "menu: edit {}\u{2193} {}",
-                                        new_val / meta.divisor,
-                                        meta.unit
-                                    );
-                                    self.state = MenuSubState::EditingValue {
-                                        setting,
-                                        original_value,
-                                        working_value: new_val,
-                                    };
-                                }
-                            }
-                            ButtonCode::CcRight | ButtonCode::CcUp => {
-                                let new_val = working_value
-                                    .saturating_add(meta.step)
-                                    .clamp(meta.min, meta.max);
-                                if new_val != working_value {
-                                    debug!(
-                                        "menu: edit {}\u{2191} {}",
-                                        new_val / meta.divisor,
-                                        meta.unit
-                                    );
-                                    self.state = MenuSubState::EditingValue {
-                                        setting,
-                                        original_value,
-                                        working_value: new_val,
-                                    };
-                                }
-                            }
-                            ButtonCode::CcSelect => {
-                                debug!(
-                                    "menu: commit {} {}",
-                                    working_value / meta.divisor,
-                                    meta.unit
-                                );
-                                self.write_setting(setting, working_value);
-                                self.state = MenuSubState::Browsing;
-                            }
-                            _ => {}
-                        }
-                    }
-                    MenuSubState::EditingKeyBinding {
-                        button: bind_button,
-                        working_key_idx,
-                        original_key_idx,
-                    } => match button {
-                        ButtonCode::CcLeft | ButtonCode::CcDown => {
-                            let count = VALID_KEYS.len();
-                            let new_idx = (working_key_idx + count - 1) % count;
-                            debug!("menu: key bind ← {}", VALID_KEYS[new_idx]);
-                            self.state = MenuSubState::EditingKeyBinding {
-                                button: bind_button,
-                                working_key_idx: new_idx,
-                                original_key_idx,
-                            };
-                        }
-                        ButtonCode::CcRight | ButtonCode::CcUp => {
-                            let count = VALID_KEYS.len();
-                            let new_idx = (working_key_idx + 1) % count;
-                            debug!("menu: key bind → {}", VALID_KEYS[new_idx]);
-                            self.state = MenuSubState::EditingKeyBinding {
-                                button: bind_button,
-                                working_key_idx: new_idx,
-                                original_key_idx,
-                            };
-                        }
-                        ButtonCode::CcSelect => {
-                            let key = VALID_KEYS[working_key_idx];
-                            debug!("menu: bind commit {}", key);
-                            self.write_key_binding(bind_button, key);
-                            self.state = MenuSubState::Browsing;
-                        }
-                        _ => {}
-                    },
-                    MenuSubState::WikiEdit {
-                        encoder,
-                        selected,
-                        editing,
-                        working_threshold,
-                        working_timeout,
-                        original_threshold,
-                        original_timeout,
-                    } => {
-                        if editing {
-                            let val = if selected == 0 {
-                                working_timeout
-                            } else {
-                                working_threshold
-                            };
-                            let key = if selected == 0 {
-                                SettingKey::EncoderMoveTimeout(encoder)
-                            } else {
-                                SettingKey::EncoderStepThreshold(encoder)
-                            };
-                            let meta = key.meta();
-                            match button {
-                                ButtonCode::CcLeft | ButtonCode::CcDown => {
-                                    let new_val =
-                                        val.saturating_sub(meta.step).clamp(meta.min, meta.max);
-                                    if selected == 0 {
-                                        self.state = MenuSubState::WikiEdit {
-                                            encoder,
-                                            selected,
-                                            editing: true,
-                                            working_threshold,
-                                            working_timeout: new_val,
-                                            original_threshold,
-                                            original_timeout,
-                                        };
-                                    } else {
-                                        self.state = MenuSubState::WikiEdit {
-                                            encoder,
-                                            selected,
-                                            editing: true,
-                                            working_threshold: new_val,
-                                            working_timeout,
-                                            original_threshold,
-                                            original_timeout,
-                                        };
-                                    }
-                                }
-                                ButtonCode::CcRight | ButtonCode::CcUp => {
-                                    let new_val =
-                                        val.saturating_add(meta.step).clamp(meta.min, meta.max);
-                                    if selected == 0 {
-                                        self.state = MenuSubState::WikiEdit {
-                                            encoder,
-                                            selected,
-                                            editing: true,
-                                            working_threshold,
-                                            working_timeout: new_val,
-                                            original_threshold,
-                                            original_timeout,
-                                        };
-                                    } else {
-                                        self.state = MenuSubState::WikiEdit {
-                                            encoder,
-                                            selected,
-                                            editing: true,
-                                            working_threshold: new_val,
-                                            working_timeout,
-                                            original_threshold,
-                                            original_timeout,
-                                        };
-                                    }
-                                }
-                                ButtonCode::CcSelect => {
-                                    let sk = SettingKey::EncoderStepThreshold(encoder);
-                                    self.write_setting(sk, working_threshold);
-                                    let sk = SettingKey::EncoderMoveTimeout(encoder);
-                                    self.write_setting(sk, working_timeout);
-                                    debug!("menu: wiki commit");
-                                    self.state = MenuSubState::WikiEdit {
-                                        encoder,
-                                        selected,
-                                        editing: false,
-                                        working_threshold,
-                                        working_timeout,
-                                        original_threshold,
-                                        original_timeout,
-                                    };
-                                }
-                                _ => {}
-                            }
-                        } else {
-                            match button {
-                                ButtonCode::CcUp | ButtonCode::CcDown => {
-                                    let new_sel = (selected + 1) % 2;
-                                    debug!(
-                                        "menu: wiki select {}",
-                                        if new_sel == 0 { "timeout" } else { "threshold" }
-                                    );
-                                    self.state = MenuSubState::WikiEdit {
-                                        encoder,
-                                        selected: new_sel,
-                                        editing: false,
-                                        working_threshold,
-                                        working_timeout,
-                                        original_threshold,
-                                        original_timeout,
-                                    };
-                                }
-                                ButtonCode::CcSelect | ButtonCode::CcRight => {
-                                    debug!("menu: wiki edit start");
-                                    self.state = MenuSubState::WikiEdit {
-                                        encoder,
-                                        selected,
-                                        editing: true,
-                                        working_threshold,
-                                        working_timeout,
-                                        original_threshold,
-                                        original_timeout,
-                                    };
-                                }
-                                ButtonCode::CcLeft => {
-                                    if self.settings_changed && !self.prompt_answered_since_change {
-                                        self.state = self.build_save_prompt();
-                                    } else {
-                                        debug!("menu: wiki exit");
-                                        self.state = MenuSubState::Browsing;
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
+                        | ButtonCode::CcRight
+                        | ButtonCode::CcSelect
+                ) =>
+            {
+                debug!("menu: exit idle");
+                self.state = self.saved_state;
+            }
+            _ => self.handle_repeat_as_press(button),
+        }
+    }
+
+    fn dispatch_idle(&mut self) {
+        if !matches!(
+            self.state,
+            MenuSubState::IdleMode | MenuSubState::DisplayMode(_)
+        ) {
+            debug!("menu: idle");
+            self.saved_state = self.state;
+            self.state = MenuSubState::IdleMode;
+        }
+    }
+
+    // ── Press handlers ──
+
+    fn on_prompt_press(&mut self, button: ButtonCode) {
+        if let MenuSubState::Prompt {
+            lines,
+            choices,
+            selection,
+        } = self.state
+        {
+            match button {
+                ButtonCode::CcUp
+                | ButtonCode::CcDown
+                | ButtonCode::CcLeft
+                | ButtonCode::CcRight => {
+                    let new_sel = match selection {
+                        PromptSide::First => PromptSide::Second,
+                        PromptSide::Second => PromptSide::First,
+                    };
+                    self.state = MenuSubState::Prompt {
+                        lines,
+                        choices,
+                        selection: new_sel,
+                    };
+                }
+                ButtonCode::CcSelect => {
+                    self.prompt_answered_since_change = true;
+                    let action = match selection {
+                        PromptSide::First => choices[0].action,
+                        PromptSide::Second => choices[1].action,
+                    };
+                    self.execute_action(action);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn on_custom_press(&mut self, cursor: usize, button: ButtonCode) {
+        let change_count = self.count_changes();
+        if change_count == 0 {
+            self.state = MenuSubState::Browsing;
+            return;
+        }
+        match button {
+            ButtonCode::CcLeft => {
+                if self.stack_depth > 1 {
+                    self.prompt_if_unsaved(|s| {
+                        s.state = MenuSubState::Browsing;
+                    });
+                } else {
+                    self.state = MenuSubState::Browsing;
                 }
             }
-            MenuEvents::LongPress(button) => {
-                let current_state = self.state;
-                match current_state {
-                    MenuSubState::IdleMode => {
-                        if matches!(
-                            button,
-                            ButtonCode::CcUp
-                                | ButtonCode::CcDown
-                                | ButtonCode::CcLeft
-                                | ButtonCode::CcRight
-                                | ButtonCode::CcSelect
-                        ) {
-                            debug!("menu: exit idle");
-                            self.state = self.saved_state;
-                        }
-                    }
-                    MenuSubState::DisplayMode(MenuMode::Debug) => {
-                        if button == ButtonCode::CcSelect || button == ButtonCode::CcLeft {
-                            debug!("menu: exit debug screen (long-press)");
-                            self.state = MenuSubState::Browsing;
-                        }
-                    }
-                    MenuSubState::DisplayMode(MenuMode::PixelTest) => {
-                        debug!("menu: exit pixel test");
-                        self.state = MenuSubState::Browsing;
-                    }
-                    MenuSubState::Prompt { .. } => {
-                        self.process_event(MenuEvents::Press(button));
-                    }
-                    MenuSubState::ShowCustom { .. } => {
-                        self.process_event(MenuEvents::Press(button));
-                    }
-                    _ => match button {
-                        ButtonCode::CcUp | ButtonCode::CcDown => {
-                            self.process_event(MenuEvents::Press(button));
-                        }
-                        ButtonCode::CcLeft | ButtonCode::CcRight
-                            if matches!(
-                                self.state,
-                                MenuSubState::EditingValue { .. }
-                                    | MenuSubState::EditingKeyBinding { .. }
-                                    | MenuSubState::WikiEdit { .. }
-                            ) =>
-                        {
-                            self.process_event(MenuEvents::Press(button));
-                        }
-                        _ => {}
-                    },
-                }
+            ButtonCode::CcUp => {
+                let new_cursor = (cursor + change_count - 1) % change_count;
+                self.state = MenuSubState::ShowCustom { cursor: new_cursor };
             }
-            MenuEvents::Repeat(button) => {
-                if matches!(
-                    self.state,
-                    MenuSubState::Prompt { .. } | MenuSubState::ShowCustom { .. }
-                ) {
-                    self.process_event(MenuEvents::Press(button));
-                    return;
-                }
-                if matches!(self.state, MenuSubState::IdleMode)
-                    && matches!(
-                        button,
-                        ButtonCode::CcUp
-                            | ButtonCode::CcDown
-                            | ButtonCode::CcLeft
-                            | ButtonCode::CcRight
-                            | ButtonCode::CcSelect
-                    )
-                {
-                    debug!("menu: exit idle");
-                    self.state = self.saved_state;
-                    return;
-                }
-                let is_editing = matches!(
-                    self.state,
-                    MenuSubState::EditingValue { .. }
-                        | MenuSubState::EditingKeyBinding { .. }
-                        | MenuSubState::WikiEdit { .. }
+            ButtonCode::CcDown => {
+                let new_cursor = (cursor + 1) % change_count;
+                self.state = MenuSubState::ShowCustom { cursor: new_cursor };
+            }
+            ButtonCode::CcRight | ButtonCode::CcSelect => {
+                self.state = Self::build_prompt(
+                    ["Reset value", "to default", "state?"],
+                    MenuAction::ResetField(cursor),
+                    MenuAction::ReturnToCustom,
                 );
-                match button {
-                    ButtonCode::CcUp | ButtonCode::CcDown => {
-                        self.process_event(MenuEvents::Press(button));
+            }
+            _ => {}
+        }
+    }
+
+    fn on_idle_press(&mut self, button: ButtonCode) {
+        if matches!(
+            button,
+            ButtonCode::CcUp
+                | ButtonCode::CcDown
+                | ButtonCode::CcLeft
+                | ButtonCode::CcRight
+                | ButtonCode::CcSelect
+        ) {
+            debug!("menu: exit idle");
+            self.state = self.saved_state;
+        }
+    }
+
+    fn on_pixel_press(&mut self, _button: ButtonCode) {
+        debug!("menu: exit pixel test");
+        self.state = MenuSubState::Browsing;
+    }
+
+    fn on_browsing_press(&mut self, button: ButtonCode) {
+        let level = self.current_level();
+        let cursor = self.current_cursor();
+        match button {
+            ButtonCode::CcUp => {
+                let len = level.options.len();
+                let new_cursor = (cursor + len - 1) % len;
+                debug!("menu: cursor up \u{2192} {}", new_cursor);
+                *self.current_cursor_mut() = new_cursor;
+            }
+            ButtonCode::CcDown => {
+                let len = level.options.len();
+                let new_cursor = (cursor + 1) % len;
+                debug!("menu: cursor down \u{2192} {}", new_cursor);
+                *self.current_cursor_mut() = new_cursor;
+            }
+            ButtonCode::CcSelect | ButtonCode::CcRight => {
+                self.execute_action(level.options[cursor].action);
+            }
+            ButtonCode::CcLeft => {
+                if self.stack_depth > 1 {
+                    self.prompt_if_unsaved(|s| s.pop_level());
+                } else {
+                    self.pop_level();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn on_editing_press(&mut self, button: ButtonCode) {
+        // Work on a local copy to avoid borrowing conflicts with self calls.
+        let mut editing = match self.state {
+            MenuSubState::Editing { editor, commit } => Some((editor, commit)),
+            _ => None,
+        };
+        if let Some((ref mut editor, commit)) = editing {
+            let mut do_commit = None;
+            match editor {
+                Editor::IntRange {
+                    value,
+                    step,
+                    min,
+                    max,
+                    divisor,
+                    unit,
+                } => match button {
+                    ButtonCode::CcLeft | ButtonCode::CcDown => {
+                        let new_val = clamp_step(*value, *step, *min, *max, false);
+                        if new_val != *value {
+                            debug!("menu: edit {}\u{2193} {}", new_val / *divisor, unit);
+                            *value = new_val;
+                        }
                     }
-                    ButtonCode::CcLeft | ButtonCode::CcRight if is_editing => {
-                        self.process_event(MenuEvents::Press(button));
+                    ButtonCode::CcRight | ButtonCode::CcUp => {
+                        let new_val = clamp_step(*value, *step, *min, *max, true);
+                        if new_val != *value {
+                            debug!("menu: edit {}\u{2191} {}", new_val / *divisor, unit);
+                            *value = new_val;
+                        }
+                    }
+                    ButtonCode::CcSelect => {
+                        debug!("menu: commit {} {}", *value / *divisor, unit);
+                        do_commit = Some((commit, *value));
                     }
                     _ => {}
-                }
+                },
+                // Editor::OptionSelect { labels, current } => ...,
+                // Editor::BoolToggle(v) => ...,
             }
-            MenuEvents::Idle => {
-                if !matches!(
-                    self.state,
-                    MenuSubState::IdleMode | MenuSubState::DisplayMode(_)
-                ) {
-                    debug!("menu: idle");
-                    self.saved_state = self.state;
-                    self.state = MenuSubState::IdleMode;
-                }
+            if let Some((commit, val)) = do_commit {
+                self.commit_edit(commit, val);
+                self.state = MenuSubState::Browsing;
+            } else {
+                // Write the modified editor back so the display updates.
+                self.state = MenuSubState::Editing {
+                    editor: *editor,
+                    commit,
+                };
             }
+        }
+    }
+
+    fn on_keybinding_press(&mut self, button: ButtonCode) {
+        // Work on a local copy to avoid borrowing conflicts with self calls.
+        let mut kb = match self.state {
+            MenuSubState::EditingKeyBinding {
+                button: b,
+                working_key_idx,
+                original_key_idx,
+            } => Some((b, working_key_idx, original_key_idx)),
+            _ => None,
+        };
+        if let Some((bind_button, ref mut working_key_idx, original_key_idx)) = kb {
+            match button {
+                ButtonCode::CcLeft | ButtonCode::CcDown => {
+                    let count = VALID_KEYS.len();
+                    let new_idx = (*working_key_idx + count - 1) % count;
+                    debug!("menu: key bind \u{2190} {}", VALID_KEYS[new_idx]);
+                    *working_key_idx = new_idx;
+                    self.state = MenuSubState::EditingKeyBinding {
+                        button: bind_button,
+                        working_key_idx: new_idx,
+                        original_key_idx,
+                    };
+                }
+                ButtonCode::CcRight | ButtonCode::CcUp => {
+                    let count = VALID_KEYS.len();
+                    let new_idx = (*working_key_idx + 1) % count;
+                    debug!("menu: key bind \u{2192} {}", VALID_KEYS[new_idx]);
+                    *working_key_idx = new_idx;
+                    self.state = MenuSubState::EditingKeyBinding {
+                        button: bind_button,
+                        working_key_idx: new_idx,
+                        original_key_idx,
+                    };
+                }
+                ButtonCode::CcSelect => {
+                    let key = VALID_KEYS[*working_key_idx];
+                    debug!("menu: bind commit {}", key);
+                    self.write_key_binding(bind_button, key);
+                    self.state = MenuSubState::Browsing;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn on_wiki_press(&mut self, w: &WikiEditState, button: ButtonCode) {
+        if w.editing {
+            let val = if w.selected == 0 {
+                w.working_timeout
+            } else {
+                w.working_threshold
+            };
+            let key = if w.selected == 0 {
+                SettingKey::EncoderMoveTimeout(w.encoder)
+            } else {
+                SettingKey::EncoderStepThreshold(w.encoder)
+            };
+            let meta = key.meta();
+            match button {
+                ButtonCode::CcLeft | ButtonCode::CcDown => {
+                    let new_val = clamp_step(val, meta.step, meta.min, meta.max, false);
+                    self.state = MenuSubState::WikiEdit(WikiEditState {
+                        editing: true,
+                        working_timeout: if w.selected == 0 {
+                            new_val
+                        } else {
+                            w.working_timeout
+                        },
+                        working_threshold: if w.selected == 0 {
+                            w.working_threshold
+                        } else {
+                            new_val
+                        },
+                        ..*w
+                    });
+                }
+                ButtonCode::CcRight | ButtonCode::CcUp => {
+                    let new_val = clamp_step(val, meta.step, meta.min, meta.max, true);
+                    self.state = MenuSubState::WikiEdit(WikiEditState {
+                        editing: true,
+                        working_timeout: if w.selected == 0 {
+                            new_val
+                        } else {
+                            w.working_timeout
+                        },
+                        working_threshold: if w.selected == 0 {
+                            w.working_threshold
+                        } else {
+                            new_val
+                        },
+                        ..*w
+                    });
+                }
+                ButtonCode::CcSelect => {
+                    let sk = SettingKey::EncoderStepThreshold(w.encoder);
+                    self.write_setting(sk, w.working_threshold);
+                    let sk = SettingKey::EncoderMoveTimeout(w.encoder);
+                    self.write_setting(sk, w.working_timeout);
+                    debug!("menu: wiki commit");
+                    self.state = MenuSubState::WikiEdit(WikiEditState {
+                        editing: false,
+                        ..*w
+                    });
+                }
+                _ => {}
+            }
+        } else {
+            match button {
+                ButtonCode::CcUp | ButtonCode::CcDown => {
+                    let new_sel = (w.selected + 1) % 2;
+                    debug!(
+                        "menu: wiki select {}",
+                        if new_sel == 0 { "timeout" } else { "threshold" }
+                    );
+                    self.state = MenuSubState::WikiEdit(WikiEditState {
+                        selected: new_sel,
+                        ..*w
+                    });
+                }
+                ButtonCode::CcSelect | ButtonCode::CcRight => {
+                    debug!("menu: wiki edit start");
+                    self.state = MenuSubState::WikiEdit(WikiEditState {
+                        editing: true,
+                        ..*w
+                    });
+                }
+                ButtonCode::CcLeft => {
+                    self.prompt_if_unsaved(|s| {
+                        debug!("menu: wiki exit");
+                        s.state = MenuSubState::Browsing;
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // ── Long-press handlers ──
+
+    fn on_idle_long_press(&mut self, button: ButtonCode) {
+        if matches!(
+            button,
+            ButtonCode::CcUp
+                | ButtonCode::CcDown
+                | ButtonCode::CcLeft
+                | ButtonCode::CcRight
+                | ButtonCode::CcSelect
+        ) {
+            debug!("menu: exit idle");
+            self.state = self.saved_state;
+        }
+    }
+
+    fn on_debug_long_press(&mut self, button: ButtonCode) {
+        if button == ButtonCode::CcSelect || button == ButtonCode::CcLeft {
+            debug!("menu: exit debug screen (long-press)");
+            self.state = MenuSubState::Browsing;
+        }
+    }
+
+    fn on_pixel_long_press(&mut self, _button: ButtonCode) {
+        debug!("menu: exit pixel test");
+        self.state = MenuSubState::Browsing;
+    }
+
+    /// Common handling for LongPress and Repeat events: delegate direction
+    /// buttons to `Press` where appropriate (always for Up/Down, only when
+    /// in an editing substate for Left/Right).
+    fn handle_repeat_as_press(&mut self, button: ButtonCode) {
+        let is_editing = matches!(
+            self.state,
+            MenuSubState::Editing { .. }
+                | MenuSubState::EditingKeyBinding { .. }
+                | MenuSubState::WikiEdit(..)
+        );
+        match button {
+            ButtonCode::CcUp | ButtonCode::CcDown => {
+                self.process_event(MenuEvents::Press(button));
+            }
+            ButtonCode::CcLeft | ButtonCode::CcRight if is_editing => {
+                self.process_event(MenuEvents::Press(button));
+            }
+            _ => {}
         }
     }
 
@@ -1370,68 +1375,10 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
         encoder_p1_count: i32,
         encoder_p2_count: i32,
     ) {
-        let current_state = self.state;
-        match current_state {
-            MenuSubState::Prompt {
-                lines,
-                choices,
-                selection,
-            } => {
-                self.display.clear(BinaryColor::Off).unwrap();
-                for (i, line) in lines.iter().enumerate() {
-                    let s = line.as_str();
-                    if !s.is_empty() {
-                        Text::with_baseline(
-                            s,
-                            Point::new(0, LINE_Y[i]),
-                            self.text_style,
-                            Baseline::Top,
-                        )
-                        .draw(self.display)
-                        .unwrap();
-                    }
-                }
-                // Left option
-                Text::with_baseline(
-                    choices[0].label.as_str(),
-                    Point::new(2, LINE_Y[3]),
-                    self.text_style,
-                    Baseline::Top,
-                )
-                .draw(self.display)
-                .unwrap();
-                // Right option
-                let mut right_text = Text::with_alignment(
-                    choices[1].label.as_str(),
-                    Point::new(DISPLAY_R - 2, LINE_Y[3]),
-                    self.text_style,
-                    Alignment::Right,
-                );
-                right_text.text_style.baseline = Baseline::Top;
-                right_text.draw(self.display).unwrap();
-                // Bounding box around the selected option
-                let label = choices[match selection {
-                    PromptSide::First => 0,
-                    PromptSide::Second => 1,
-                }]
-                .label
-                .as_str();
-                let label_width = label.as_bytes().len() as i32 * CHAR_W;
-                let (box_x, box_w) = match selection {
-                    PromptSide::First => (1, label_width + 2),
-                    PromptSide::Second => (DISPLAY_R - 2 - label_width, label_width + 2),
-                };
-                Rectangle::new(
-                    Point::new(box_x, LINE_Y[3] + 1),
-                    Size::new(box_w as u32, 15),
-                )
-                .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-                .draw(self.display)
-                .unwrap();
-                self.display.flush().unwrap();
-            }
+        match self.state {
+            MenuSubState::Prompt { .. } => self.render_prompt(),
             MenuSubState::ShowCustom { cursor } => {
-                self.render_show_custom(cursor, current_combined_button_state);
+                self.render_show_custom(cursor, current_combined_button_state)
             }
             MenuSubState::IdleMode => self.print_debug_display(
                 current_combined_button_state,
@@ -1444,66 +1391,103 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 encoder_p2_count,
             ),
             MenuSubState::DisplayMode(MenuMode::PixelTest) => self.print_pixel_test(),
-            MenuSubState::Browsing => {
-                self.back_arrow_y = None;
-                self.title_buf.reset();
-                for line in &mut self.label_bufs {
-                    line.reset();
+            MenuSubState::Browsing => self.render_browsing_screen(),
+            MenuSubState::Editing { .. } => self.render_editing_screen(),
+            MenuSubState::EditingKeyBinding { .. } => self.render_keybinding_screen(),
+            MenuSubState::WikiEdit(ref w) => self.render_wiki_edit(
+                w.encoder,
+                w.selected,
+                w.editing,
+                w.working_threshold,
+                w.working_timeout,
+            ),
+        }
+    }
+
+    fn render_prompt(&mut self) {
+        if let MenuSubState::Prompt {
+            lines,
+            choices,
+            selection,
+        } = self.state
+        {
+            self.display.clear(BinaryColor::Off).unwrap();
+            for (i, line) in lines.iter().enumerate() {
+                let s = line.as_str();
+                if !s.is_empty() {
+                    Text::with_baseline(
+                        s,
+                        Point::new(0, LINE_Y[i]),
+                        self.text_style,
+                        Baseline::Top,
+                    )
+                    .draw(self.display)
+                    .unwrap();
                 }
-                for line in &mut self.value_bufs {
-                    line.reset();
-                }
-                self.render_browsing();
-                self.draw_menu_text(None);
             }
-            MenuSubState::EditingValue {
-                setting,
-                working_value,
-                ..
-            } => {
-                self.back_arrow_y = None;
-                self.title_buf.reset();
-                for line in &mut self.label_bufs {
-                    line.reset();
-                }
-                for line in &mut self.value_bufs {
-                    line.reset();
-                }
-                self.render_editing_value(setting, working_value);
-                self.draw_menu_text(Some(2));
-            }
-            MenuSubState::EditingKeyBinding {
-                button,
-                working_key_idx,
-                ..
-            } => {
-                self.back_arrow_y = None;
-                self.title_buf.reset();
-                for line in &mut self.label_bufs {
-                    line.reset();
-                }
-                for line in &mut self.value_bufs {
-                    line.reset();
-                }
-                self.render_editing_keybinding(button, working_key_idx);
-                self.draw_menu_text(Some(2));
-            }
-            MenuSubState::WikiEdit {
-                encoder,
-                selected,
-                editing,
-                working_threshold,
-                working_timeout,
-                ..
-            } => {
-                self.render_wiki_edit(
-                    encoder,
-                    selected,
-                    editing,
-                    working_threshold,
-                    working_timeout,
-                );
-            }
+            Text::with_baseline(
+                choices[0].label.as_str(),
+                Point::new(2, LINE_Y[3]),
+                self.text_style,
+                Baseline::Top,
+            )
+            .draw(self.display)
+            .unwrap();
+            let mut right_text = Text::with_alignment(
+                choices[1].label.as_str(),
+                Point::new(DISPLAY_R - 2, LINE_Y[3]),
+                self.text_style,
+                Alignment::Right,
+            );
+            right_text.text_style.baseline = Baseline::Top;
+            right_text.draw(self.display).unwrap();
+            let label = choices[match selection {
+                PromptSide::First => 0,
+                PromptSide::Second => 1,
+            }]
+            .label
+            .as_str();
+            let label_width = label.as_bytes().len() as i32 * CHAR_W;
+            let (box_x, box_w) = match selection {
+                PromptSide::First => (1, label_width + 2),
+                PromptSide::Second => (DISPLAY_R - 2 - label_width, label_width + 2),
+            };
+            Rectangle::new(
+                Point::new(box_x, LINE_Y[3] + 1),
+                Size::new(box_w as u32, 15),
+            )
+            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+            .draw(self.display)
+            .unwrap();
+            self.display.flush().unwrap();
+        }
+    }
+
+    fn render_browsing_screen(&mut self) {
+        self.render_browsing();
+        self.draw_menu_text(None);
+    }
+
+    fn render_editing_screen(&mut self) {
+        if let MenuSubState::Editing { ref editor, .. } = self.state {
+            let override_val = match editor {
+                Editor::IntRange { value, .. } => Some(*value),
+            };
+            write!(self.title_buf, "{}", self.current_level().title).unwrap();
+            self.render_options(override_val);
+            self.draw_menu_text(Some(2));
+        }
+    }
+
+    fn render_keybinding_screen(&mut self) {
+        if let MenuSubState::EditingKeyBinding {
+            button,
+            working_key_idx,
+            ..
+        } = self.state
+        {
+            self.render_editing_keybinding(button, working_key_idx);
+            self.draw_menu_text(Some(2));
         }
     }
 
@@ -1743,7 +1727,8 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
         override_val: Option<u32>,
     ) -> bool {
         match option.action {
-            MenuAction::EditSetting(key) => {
+            MenuAction::EditValue(vk) => {
+                let key: SettingKey = vk.into();
                 let val = override_val.unwrap_or_else(|| self.read_setting(key));
                 let meta = key.meta();
                 let display_val = val / meta.divisor;
@@ -1758,75 +1743,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 let key = override_val
                     .map(|v| v as u8)
                     .unwrap_or_else(|| self.read_key_binding(code));
-                // Use the library's Debug name, overriding only long ones
-                match key {
-                    0 => write!(buf, "No Key"),
-                    1 => write!(buf, "ErrRO"),
-                    2 => write!(buf, "POST"),
-                    3 => write!(buf, "Err"),
-                    30..=39 => {
-                        let digit = if key == 39 { 0 } else { key - 30 + 1 };
-                        write!(buf, "K{}", digit)
-                    }
-                    40 => write!(buf, "Enter"),
-                    42 => write!(buf, "BkSpc"),
-                    47 => write!(buf, "{{"),
-                    48 => write!(buf, "}}"),
-                    49 => write!(buf, "\\"),
-                    50 => write!(buf, "#"),
-                    51 => write!(buf, ";"),
-                    52 => write!(buf, "'"),
-                    56 => write!(buf, "/"),
-                    57 => write!(buf, "Caps"),
-                    70 => write!(buf, "PrtSc"),
-                    71 => write!(buf, "ScrLk"),
-                    75 => write!(buf, "PgUp"),
-                    76 => write!(buf, "Del"),
-                    78 => write!(buf, "PgDn"),
-                    79 => write!(buf, "RArr"),
-                    80 => write!(buf, "LArr"),
-                    81 => write!(buf, "DArr"),
-                    82 => write!(buf, "UArr"),
-                    83 => write!(buf, "NLck"),
-                    84 => write!(buf, "Kp/"),
-                    85 => write!(buf, "Kp*"),
-                    86 => write!(buf, "Kp-"),
-                    87 => write!(buf, "Kp+"),
-                    88 => write!(buf, "KEnt"),
-                    89..=97 => write!(buf, "Kp{}", key - 88),
-                    98 => write!(buf, "Kp0"),
-                    99 => write!(buf, "Kp."),
-                    100 => write!(buf, "NUS\\"),
-                    101 => write!(buf, "App"),
-                    103 => write!(buf, "KpEq"),
-                    127 => write!(buf, "Mute"),
-                    128 => write!(buf, "VolUp"),
-                    129 => write!(buf, "VolDn"),
-                    130 => write!(buf, "LCaps"),
-                    131 => write!(buf, "LNumL"),
-                    132 => write!(buf, "LScrL"),
-                    133 => write!(buf, "KpCom"),
-                    134 => write!(buf, "KpEqS"),
-                    153 => write!(buf, "AltEr"),
-                    154 => write!(buf, "SysRq"),
-                    159 => write!(buf, "Sep"),
-                    162 => write!(buf, "ClrAg"),
-                    163 => write!(buf, "Props"),
-                    224 => write!(buf, "LCTRL"),
-                    225 => write!(buf, "LSHFT"),
-                    226 => write!(buf, "LALT"),
-                    227 => write!(buf, "LGUI"),
-                    228 => write!(buf, "RCTRL"),
-                    229 => write!(buf, "RSHFT"),
-                    230 => write!(buf, "RALT"),
-                    231 => write!(buf, "RGUI"),
-                    _ => write!(
-                        buf,
-                        "{:?}",
-                        usbd_human_interface_device::page::Keyboard::from(key)
-                    ),
-                }
-                .unwrap();
+                write!(buf, "{}", key_name(key)).unwrap();
                 true
             }
             _ => false,
@@ -1875,11 +1792,6 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
     fn render_browsing(&mut self) {
         write!(self.title_buf, "{}", self.current_level().title).unwrap();
         self.render_options(None);
-    }
-
-    fn render_editing_value(&mut self, _setting: SettingKey, working_value: u32) {
-        write!(self.title_buf, "{}", self.current_level().title).unwrap();
-        self.render_options(Some(working_value));
     }
 
     fn render_editing_keybinding(&mut self, _button: ButtonCode, working_key_idx: usize) {
@@ -1987,6 +1899,16 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
         .unwrap();
 
         self.display.flush().unwrap();
+
+        // Reset per-frame buffers for the next render pass.
+        self.back_arrow_y = None;
+        self.title_buf.reset();
+        for line in &mut self.label_bufs {
+            line.reset();
+        }
+        for line in &mut self.value_bufs {
+            line.reset();
+        }
     }
 
     // ── Navigation helpers ──
@@ -1998,11 +1920,11 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 self.push_level(level);
             }
             MenuAction::GoBack => {
-                if self.settings_changed
-                    && !self.prompt_answered_since_change
-                    && self.stack_depth > 1
-                {
-                    self.state = self.build_save_prompt();
+                if self.stack_depth > 1 {
+                    self.prompt_if_unsaved(|s| {
+                        debug!("menu: back");
+                        s.pop_level();
+                    });
                 } else {
                     debug!("menu: back");
                     self.pop_level();
@@ -2017,14 +1939,10 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 debug!("menu: pixel test");
                 self.state = MenuSubState::DisplayMode(MenuMode::PixelTest);
             }
-            MenuAction::EditSetting(key) => {
-                let value = self.read_setting(key);
+            MenuAction::EditValue(vk) => {
+                let (editor, commit) = build_editor(&self.settings, vk);
                 debug!("menu: edit setting");
-                self.state = MenuSubState::EditingValue {
-                    setting: key,
-                    original_value: value,
-                    working_value: value,
-                };
+                self.state = MenuSubState::Editing { editor, commit };
             }
             MenuAction::EditKeyBinding(code) => {
                 let key = self.read_key_binding(code);
@@ -2040,7 +1958,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 let t_val = self.read_setting(SettingKey::EncoderStepThreshold(encoder));
                 let m_val = self.read_setting(SettingKey::EncoderMoveTimeout(encoder));
                 debug!("menu: wiki edit P{}", encoder + 1);
-                self.state = MenuSubState::WikiEdit {
+                self.state = MenuSubState::WikiEdit(WikiEditState {
                     encoder,
                     selected: 0,
                     editing: false,
@@ -2048,7 +1966,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                     working_timeout: m_val,
                     original_threshold: t_val,
                     original_timeout: m_val,
-                };
+                });
             }
             MenuAction::SaveAndReboot => {
                 use crate::flash_storage::*;
@@ -2076,7 +1994,11 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 self.state = MenuSubState::Browsing;
             }
             MenuAction::ResetDefaults => {
-                self.state = self.build_reset_prompt();
+                self.state = Self::build_prompt(
+                    ["This restores", "ALL changes", "back to base!"],
+                    MenuAction::PerformReset,
+                    MenuAction::Discard,
+                );
             }
             MenuAction::PerformReset => {
                 use crate::flash_storage::*;
@@ -2118,37 +2040,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
     /// Count how many settings differ from factory defaults.
     fn count_changes(&self) -> usize {
         let defaults = crate::flash_storage::FlashStoragePersistentMemory::default();
-        let mut count = 0_usize;
-        for b in 0..NUM_BUTTONS {
-            if self.settings.buttons[b].debounce_ticks != defaults.buttons[b].debounce_ticks {
-                count += 1;
-            }
-        }
-        for b in 0..NUM_BUTTONS {
-            if self.settings.buttons[b].key != defaults.buttons[b].key {
-                count += 1;
-            }
-        }
-        for e in 0..NUM_ENCODERS {
-            if self.settings.encoders[e].key_up != defaults.encoders[e].key_up {
-                count += 1;
-            }
-            if self.settings.encoders[e].key_down != defaults.encoders[e].key_down {
-                count += 1;
-            }
-            if self.settings.encoders[e].debounce_ticks != defaults.encoders[e].debounce_ticks {
-                count += 1;
-            }
-            if self.settings.encoders[e].step_threshold != defaults.encoders[e].step_threshold {
-                count += 1;
-            }
-            if self.settings.encoders[e].move_timeout_ticks
-                != defaults.encoders[e].move_timeout_ticks
-            {
-                count += 1;
-            }
-        }
-        count
+        for_each_changed_field(&self.settings, &defaults, |_, _, _| true)
     }
 
     /// Reset the `target_idx`th changed field back to its factory-default value.
@@ -2260,75 +2152,18 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
         }
 
         // ── Determine section title from cursor position ──
+        let mut section = "?";
         let mut idx = 0_usize;
-        'section: {
-            for b in 0..NUM_BUTTONS {
-                if self.settings.buttons[b].debounce_ticks != defaults.buttons[b].debounce_ticks {
-                    if idx + 1 > cursor {
-                        self.title_buf.reset();
-                        core::write!(self.title_buf, "Button Debounce").ok();
-                        break 'section;
-                    }
-                    idx += 1;
-                }
+        for_each_changed_field(&self.settings, &defaults, |field, _, _| {
+            if idx == cursor {
+                section = field.section_title();
+                return false;
             }
-            for b in 0..NUM_BUTTONS {
-                if self.settings.buttons[b].key != defaults.buttons[b].key {
-                    if idx + 1 > cursor {
-                        self.title_buf.reset();
-                        core::write!(self.title_buf, "Button Keys").ok();
-                        break 'section;
-                    }
-                    idx += 1;
-                }
-            }
-            for e in 0..NUM_ENCODERS {
-                if self.settings.encoders[e].key_up != defaults.encoders[e].key_up {
-                    if idx + 1 > cursor {
-                        self.title_buf.reset();
-                        core::write!(self.title_buf, "Encoder Keys").ok();
-                        break 'section;
-                    }
-                    idx += 1;
-                }
-                if self.settings.encoders[e].key_down != defaults.encoders[e].key_down {
-                    if idx + 1 > cursor {
-                        self.title_buf.reset();
-                        core::write!(self.title_buf, "Encoder Keys").ok();
-                        break 'section;
-                    }
-                    idx += 1;
-                }
-                if self.settings.encoders[e].debounce_ticks != defaults.encoders[e].debounce_ticks {
-                    if idx + 1 > cursor {
-                        self.title_buf.reset();
-                        core::write!(self.title_buf, "Encoder Debounce").ok();
-                        break 'section;
-                    }
-                    idx += 1;
-                }
-                if self.settings.encoders[e].step_threshold != defaults.encoders[e].step_threshold {
-                    if idx + 1 > cursor {
-                        self.title_buf.reset();
-                        core::write!(self.title_buf, "Encoder Threshold").ok();
-                        break 'section;
-                    }
-                    idx += 1;
-                }
-                if self.settings.encoders[e].move_timeout_ticks
-                    != defaults.encoders[e].move_timeout_ticks
-                {
-                    if idx + 1 > cursor {
-                        self.title_buf.reset();
-                        core::write!(self.title_buf, "Encoder Timeout").ok();
-                        break 'section;
-                    }
-                    idx += 1;
-                }
-            }
-            // fallback — should not happen
-            self.title_buf.reset();
-        }
+            idx += 1;
+            true
+        });
+        self.title_buf.reset();
+        core::write!(self.title_buf, "{}", section).ok();
 
         // ── Draw title and current item ──
         // Use label_bufs[0..2] for the three visible lines.
@@ -2397,307 +2232,43 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
         buf: &mut FmtBuf,
     ) {
         let mut idx = 0_usize;
-
-        for b in 0..NUM_BUTTONS {
-            if self.settings.buttons[b].debounce_ticks != defaults.buttons[b].debounce_ticks {
-                if idx == target_idx {
-                    let name = ButtonCode::from_repr(b).map_or("?", |c| match c {
-                        ButtonCode::P1_1 => "P1_1 db",
-                        ButtonCode::P1_2 => "P1_2 db",
-                        ButtonCode::P1_3 => "P1_3 db",
-                        ButtonCode::P1_4 => "P1_4 db",
-                        ButtonCode::P1_5 => "P1_5 db",
-                        ButtonCode::P1_6 => "P1_6 db",
-                        ButtonCode::P1_7 => "P1_7 db",
-                        ButtonCode::P1Start => "P1St db",
-                        ButtonCode::P1Select => "P1Sl db",
-                        ButtonCode::P2_1 => "P2_1 db",
-                        ButtonCode::P2_2 => "P2_2 db",
-                        ButtonCode::P2_3 => "P2_3 db",
-                        ButtonCode::P2_4 => "P2_4 db",
-                        ButtonCode::P2_5 => "P2_5 db",
-                        ButtonCode::P2_6 => "P2_6 db",
-                        ButtonCode::P2_7 => "P2_7 db",
-                        ButtonCode::P2Start => "P2St db",
-                        ButtonCode::P2Select => "P2Sl db",
-                        ButtonCode::Escape => "Esc db",
-                        ButtonCode::CcUp => "CCUp db",
-                        ButtonCode::CcDown => "CCDn db",
-                        ButtonCode::CcLeft => "CCLt db",
-                        ButtonCode::CcRight => "CCRt db",
-                        ButtonCode::CcSelect => "CCSl db",
-                        ButtonCode::VolumeUp => "VUp db",
-                        ButtonCode::VolumeDown => "VDn db",
-                        ButtonCode::Mute => "Mute db",
-                        _ => "? db",
-                    });
-                    write!(
-                        buf,
-                        "{}: {} ms",
-                        name,
-                        self.settings.buttons[b].debounce_ticks / 1_000
-                    )
-                    .ok();
-                    return;
-                }
+        for_each_changed_field(&self.settings, defaults, |field, cur, _def| {
+            if idx != target_idx {
                 idx += 1;
+                return true;
             }
-        }
-
-        for b in 0..NUM_BUTTONS {
-            if self.settings.buttons[b].key != defaults.buttons[b].key {
-                if idx == target_idx {
-                    let name = ButtonCode::from_repr(b).map_or("?", |c| match c {
-                        ButtonCode::P1_1 => "P1_1",
-                        ButtonCode::P1_2 => "P1_2",
-                        ButtonCode::P1_3 => "P1_3",
-                        ButtonCode::P1_4 => "P1_4",
-                        ButtonCode::P1_5 => "P1_5",
-                        ButtonCode::P1_6 => "P1_6",
-                        ButtonCode::P1_7 => "P1_7",
-                        ButtonCode::P1Start => "P1St",
-                        ButtonCode::P1Select => "P1Sl",
-                        ButtonCode::P2_1 => "P2_1",
-                        ButtonCode::P2_2 => "P2_2",
-                        ButtonCode::P2_3 => "P2_3",
-                        ButtonCode::P2_4 => "P2_4",
-                        ButtonCode::P2_5 => "P2_5",
-                        ButtonCode::P2_6 => "P2_6",
-                        ButtonCode::P2_7 => "P2_7",
-                        ButtonCode::P2Start => "P2St",
-                        ButtonCode::P2Select => "P2Sl",
-                        ButtonCode::Escape => "Esc",
-                        ButtonCode::CcUp => "CCUp",
-                        ButtonCode::CcDown => "CCDn",
-                        ButtonCode::CcLeft => "CCLt",
-                        ButtonCode::CcRight => "CCRt",
-                        ButtonCode::CcSelect => "CCSl",
-                        ButtonCode::VolumeUp => "VUp",
-                        ButtonCode::VolumeDown => "VDn",
-                        ButtonCode::Mute => "Mute",
-                        _ => "?",
-                    });
-                    let key = self.settings.buttons[b].key;
-                    let key_name = Self::key_name(key);
-                    write!(buf, "{}: {}", name, key_name).ok();
-                    return;
+            match field {
+                FieldDescriptor::ButtonDebounce(b) => {
+                    let code = ButtonCode::from_repr(b).expect("button index out of range");
+                    write!(buf, "{} db: {} ms", code.short_label(), cur / 1_000).ok();
                 }
-                idx += 1;
-            }
-        }
-
-        for e in 0..NUM_ENCODERS {
-            if self.settings.encoders[e].key_up != defaults.encoders[e].key_up {
-                if idx == target_idx {
-                    let enc_name = if e == 0 { "P1Up" } else { "P2Up" };
-                    let key_name = Self::key_name(self.settings.encoders[e].key_up);
-                    write!(buf, "{}: {}", enc_name, key_name).ok();
-                    return;
+                FieldDescriptor::ButtonKey(b) => {
+                    let code = ButtonCode::from_repr(b).expect("button index out of range");
+                    write!(buf, "{}: {}", code.short_label(), key_name(cur as u8)).ok();
                 }
-                idx += 1;
-            }
-            if self.settings.encoders[e].key_down != defaults.encoders[e].key_down {
-                if idx == target_idx {
-                    let enc_name = if e == 0 { "P1Dn" } else { "P2Dn" };
-                    let key_name = Self::key_name(self.settings.encoders[e].key_down);
-                    write!(buf, "{}: {}", enc_name, key_name).ok();
-                    return;
+                FieldDescriptor::EncoderKeyUp(e) => {
+                    let name = if e == 0 { "P1Up" } else { "P2Up" };
+                    write!(buf, "{}: {}", name, key_name(cur as u8)).ok();
                 }
-                idx += 1;
-            }
-            if self.settings.encoders[e].debounce_ticks != defaults.encoders[e].debounce_ticks {
-                if idx == target_idx {
-                    let enc_name = if e == 0 { "P1Edb" } else { "P2Edb" };
-                    write!(
-                        buf,
-                        "{}: {} ms",
-                        enc_name,
-                        self.settings.encoders[e].debounce_ticks / 1_000
-                    )
-                    .ok();
-                    return;
+                FieldDescriptor::EncoderKeyDown(e) => {
+                    let name = if e == 0 { "P1Dn" } else { "P2Dn" };
+                    write!(buf, "{}: {}", name, key_name(cur as u8)).ok();
                 }
-                idx += 1;
-            }
-            if self.settings.encoders[e].step_threshold != defaults.encoders[e].step_threshold {
-                if idx == target_idx {
-                    let enc_name = if e == 0 { "P1Eth" } else { "P2Eth" };
-                    write!(
-                        buf,
-                        "{}: {} Steps",
-                        enc_name, self.settings.encoders[e].step_threshold
-                    )
-                    .ok();
-                    return;
+                FieldDescriptor::EncoderDebounce(e) => {
+                    let name = if e == 0 { "P1Edb" } else { "P2Edb" };
+                    write!(buf, "{}: {} ms", name, cur / 1_000).ok();
                 }
-                idx += 1;
-            }
-            if self.settings.encoders[e].move_timeout_ticks
-                != defaults.encoders[e].move_timeout_ticks
-            {
-                if idx == target_idx {
-                    let enc_name = if e == 0 { "P1Etm" } else { "P2Etm" };
-                    write!(
-                        buf,
-                        "{}: {} ms",
-                        enc_name,
-                        self.settings.encoders[e].move_timeout_ticks / 1_000
-                    )
-                    .ok();
-                    return;
+                FieldDescriptor::EncoderStepThreshold(e) => {
+                    let name = if e == 0 { "P1Eth" } else { "P2Eth" };
+                    write!(buf, "{}: {} Steps", name, cur).ok();
                 }
-                idx += 1;
+                FieldDescriptor::EncoderMoveTimeout(e) => {
+                    let name = if e == 0 { "P1Etm" } else { "P2Etm" };
+                    write!(buf, "{}: {} ms", name, cur / 1_000).ok();
+                }
             }
-        }
-    }
-
-    /// Convert a USB HID key code to a short human-readable name.
-    fn key_name(key: u8) -> &'static str {
-        match key {
-            0 => "None",
-            1 => "ErrRO",
-            2 => "POST",
-            3 => "Err",
-            4 => "A",
-            5 => "B",
-            6 => "C",
-            7 => "D",
-            8 => "E",
-            9 => "F",
-            10 => "G",
-            11 => "H",
-            12 => "I",
-            13 => "J",
-            14 => "K",
-            15 => "L",
-            16 => "M",
-            17 => "N",
-            18 => "O",
-            19 => "P",
-            20 => "Q",
-            21 => "R",
-            22 => "S",
-            23 => "T",
-            24 => "U",
-            25 => "V",
-            26 => "W",
-            27 => "X",
-            28 => "Y",
-            29 => "Z",
-            30 => "K1",
-            31 => "K2",
-            32 => "K3",
-            33 => "K4",
-            34 => "K5",
-            35 => "K6",
-            36 => "K7",
-            37 => "K8",
-            38 => "K9",
-            39 => "K0",
-            40 => "Entr",
-            41 => "Esc",
-            42 => "BkSp",
-            43 => "Tab",
-            44 => "Spc",
-            45 => "-_",
-            46 => "=+",
-            47 => "[{",
-            48 => "]}",
-            49 => "\\|",
-            50 => "#~",
-            51 => ";:",
-            52 => "'\"",
-            53 => "`~",
-            54 => ",<",
-            55 => ".>",
-            56 => "/?",
-            57 => "Caps",
-            58 => "F1",
-            59 => "F2",
-            60 => "F3",
-            61 => "F4",
-            62 => "F5",
-            63 => "F6",
-            64 => "F7",
-            65 => "F8",
-            66 => "F9",
-            67 => "F10",
-            68 => "F11",
-            69 => "F12",
-            70 => "PrSc",
-            71 => "ScLk",
-            72 => "Paus",
-            73 => "Ins",
-            74 => "Hom",
-            75 => "PgUp",
-            76 => "Del",
-            77 => "End",
-            78 => "PgDn",
-            79 => "Rig",
-            80 => "Lef",
-            81 => "Dow",
-            82 => "Up",
-            83 => "NLck",
-            84 => "K/=",
-            85 => "K*",
-            86 => "K-",
-            87 => "K+",
-            88 => "KEn",
-            89 => "K1",
-            90 => "K2",
-            91 => "K3",
-            92 => "K4",
-            93 => "K5",
-            94 => "K6",
-            95 => "K7",
-            96 => "K8",
-            97 => "K9",
-            98 => "K0",
-            99 => "K.",
-            100 => "K\\",
-            101 => "App",
-            102 => "Pow",
-            103 => "K=",
-            104 => "F13",
-            105 => "F14",
-            106 => "F15",
-            107 => "F16",
-            108 => "F17",
-            109 => "F18",
-            110 => "F19",
-            111 => "F20",
-            112 => "F21",
-            113 => "F22",
-            114 => "F23",
-            115 => "F24",
-            116 => "Exe",
-            117 => "Help",
-            118 => "Men",
-            119 => "Sel",
-            120 => "Stp",
-            121 => "Agn",
-            122 => "Und",
-            123 => "Cut",
-            124 => "Cop",
-            125 => "Pst",
-            126 => "Fin",
-            127 => "SwC",
-            128 => "Mte",
-            129 => "AlE",
-            130 => "LAl",
-            131 => "RAl",
-            132 => "LSh",
-            133 => "RSh",
-            224 => "LCtl",
-            225 => "LShf",
-            226 => "LAlt",
-            227 => "LMta",
-            228 => "RCtl",
-            229 => "RShf",
-            230 => "RAlt",
-            231 => "RGui",
-            _ => "?",
-        }
+            false
+        });
     }
 
     /// Display \"Rebooting...\" on the OLED before a system reset.
@@ -2813,5 +2384,160 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
         }
         self.settings_changed = true;
         self.prompt_answered_since_change = false;
+    }
+}
+
+/// Convert a USB HID key code to a short human-readable name (OLED-safe length).
+fn key_name(key: u8) -> &'static str {
+    match key {
+        0 => "No Key",
+        1 => "ErrRO",
+        2 => "POST",
+        3 => "Err",
+        4 => "A",
+        5 => "B",
+        6 => "C",
+        7 => "D",
+        8 => "E",
+        9 => "F",
+        10 => "G",
+        11 => "H",
+        12 => "I",
+        13 => "J",
+        14 => "K",
+        15 => "L",
+        16 => "M",
+        17 => "N",
+        18 => "O",
+        19 => "P",
+        20 => "Q",
+        21 => "R",
+        22 => "S",
+        23 => "T",
+        24 => "U",
+        25 => "V",
+        26 => "W",
+        27 => "X",
+        28 => "Y",
+        29 => "Z",
+        30 => "K1",
+        31 => "K2",
+        32 => "K3",
+        33 => "K4",
+        34 => "K5",
+        35 => "K6",
+        36 => "K7",
+        37 => "K8",
+        38 => "K9",
+        39 => "K0",
+        40 => "Enter",
+        41 => "Esc",
+        42 => "BkSpc",
+        43 => "Tab",
+        44 => "Spc",
+        45 => "-_",
+        46 => "=+",
+        47 => "{",
+        48 => "}",
+        49 => "\\",
+        50 => "#",
+        51 => ";",
+        52 => "'",
+        53 => "Grave",
+        54 => ",<",
+        55 => ".>",
+        56 => "/",
+        57 => "Caps",
+        58 => "F1",
+        59 => "F2",
+        60 => "F3",
+        61 => "F4",
+        62 => "F5",
+        63 => "F6",
+        64 => "F7",
+        65 => "F8",
+        66 => "F9",
+        67 => "F10",
+        68 => "F11",
+        69 => "F12",
+        70 => "PrtSc",
+        71 => "ScrLk",
+        72 => "Paus",
+        73 => "Ins",
+        74 => "Hom",
+        75 => "PgUp",
+        76 => "Del",
+        77 => "End",
+        78 => "PgDn",
+        79 => "RArr",
+        80 => "LArr",
+        81 => "DArr",
+        82 => "UArr",
+        83 => "NLck",
+        84 => "Kp/",
+        85 => "Kp*",
+        86 => "Kp-",
+        87 => "Kp+",
+        88 => "KEnt",
+        89 => "Kp1",
+        90 => "Kp2",
+        91 => "Kp3",
+        92 => "Kp4",
+        93 => "Kp5",
+        94 => "Kp6",
+        95 => "Kp7",
+        96 => "Kp8",
+        97 => "Kp9",
+        98 => "Kp0",
+        99 => "Kp.",
+        100 => "NUS\\",
+        101 => "App",
+        102 => "Pow",
+        103 => "KpEq",
+        104 => "F13",
+        105 => "F14",
+        106 => "F15",
+        107 => "F16",
+        108 => "F17",
+        109 => "F18",
+        110 => "F19",
+        111 => "F20",
+        112 => "F21",
+        113 => "F22",
+        114 => "F23",
+        115 => "F24",
+        116 => "Exe",
+        117 => "Help",
+        118 => "Men",
+        119 => "Sel",
+        120 => "Stp",
+        121 => "Agn",
+        122 => "Und",
+        123 => "Cut",
+        124 => "Cop",
+        125 => "Pst",
+        126 => "Fin",
+        127 => "Mute",
+        128 => "VolUp",
+        129 => "VolDn",
+        130 => "LCaps",
+        131 => "LNumL",
+        132 => "LScrL",
+        133 => "KpCom",
+        134 => "KpEqS",
+        153 => "AltEr",
+        154 => "SysRq",
+        159 => "Sep",
+        162 => "ClrAg",
+        163 => "Props",
+        224 => "LCTRL",
+        225 => "LSHFT",
+        226 => "LALT",
+        227 => "LGUI",
+        228 => "RCTRL",
+        229 => "RSHFT",
+        230 => "RALT",
+        231 => "RGUI",
+        _ => "?",
     }
 }
