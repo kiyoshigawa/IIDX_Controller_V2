@@ -142,6 +142,7 @@ pub struct EncoderConfig {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct FlashStoragePersistentMemory {
     pub header: u32,
     pub header_inv: u32,
@@ -304,7 +305,7 @@ impl FlashStoragePersistentMemory {
 /// (0–31) index the lower half; logical (encoder-derived) button codes
 /// (32+) index the upper half, so the same bit-scanning logic handles both.
 #[repr(usize)]
-#[derive(Clone, Copy, EnumIter)]
+#[derive(Clone, Copy, PartialEq, EnumIter)]
 pub enum ButtonCode {
     // Physical buttons (0–31, currently 0–26 are wired)
     P1_1 = 0,

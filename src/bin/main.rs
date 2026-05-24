@@ -484,7 +484,7 @@ fn main() -> ! {
             // don't use this area for shared peripherals, they should be set up outside this function.
 
             // These will handle processing input changes and triggering events based on the input state.
-            let menu_handler = MenuHandler::new(&mut display);
+            let menu_handler = MenuHandler::new(&mut display, *config);
             let mut input_handler = InputHandler::new(menu_handler);
 
             // core1 loop state variables:
