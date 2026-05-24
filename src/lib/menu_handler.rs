@@ -170,6 +170,9 @@ pub(crate) enum MenuMode {
 /// changes in the menu/display state.
 pub enum MenuEvents {
     Press(ButtonCode),
+    LongPress(ButtonCode),
+    Repeat(ButtonCode),
+    Idle,
 }
 
 /// Orientation to apply when drawing an encoder arrow graphic.
@@ -240,6 +243,7 @@ enum MenuSubState {
         original_timeout: u32,
     },
     DisplayMode(MenuMode),
+    IdleMode,
 }
 
 /// Returns the [`Flip`] orientation required for a given encoder
@@ -689,6 +693,7 @@ pub struct MenuHandler<'a, D> {
     text_style: MonoTextStyle<'static, BinaryColor>,
     pub frames_rendered: u64,
     state: MenuSubState,
+    saved_state: MenuSubState,
     stack: [Option<StackItem>; MAX_MENU_DEPTH],
     stack_depth: usize,
     /// RAM shadow of flash settings — modified in-place during editing,
@@ -719,7 +724,8 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             value_bufs: [FmtBuf::new(), FmtBuf::new(), FmtBuf::new()],
             text_style,
             frames_rendered: 0,
-            state: MenuSubState::Browsing,
+            state: MenuSubState::IdleMode,
+            saved_state: MenuSubState::Browsing,
             stack,
             stack_depth: 1,
             settings,
@@ -733,11 +739,22 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             MenuEvents::Press(button) => {
                 let current_state = self.state;
                 match current_state {
-                    MenuSubState::DisplayMode(MenuMode::Debug) => {
-                        if button == ButtonCode::CcSelect {
-                            debug!("menu: exit debug screen");
-                            self.state = MenuSubState::Browsing;
+                    MenuSubState::IdleMode => {
+                        if matches!(
+                            button,
+                            ButtonCode::CcUp
+                                | ButtonCode::CcDown
+                                | ButtonCode::CcLeft
+                                | ButtonCode::CcRight
+                                | ButtonCode::CcSelect
+                        ) {
+                            debug!("menu: exit idle");
+                            self.state = self.saved_state;
                         }
+                    }
+                    MenuSubState::DisplayMode(MenuMode::Debug) => {
+                        // Short press does nothing in debug mode.
+                        // Exit requires a long press (handled in LongPress arm).
                     }
                     MenuSubState::DisplayMode(MenuMode::PixelTest) => {
                         debug!("menu: exit pixel test");
@@ -984,6 +1001,88 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                     }
                 }
             }
+            MenuEvents::LongPress(button) => {
+                let current_state = self.state;
+                match current_state {
+                    MenuSubState::IdleMode => {
+                        if matches!(
+                            button,
+                            ButtonCode::CcUp
+                                | ButtonCode::CcDown
+                                | ButtonCode::CcLeft
+                                | ButtonCode::CcRight
+                                | ButtonCode::CcSelect
+                        ) {
+                            debug!("menu: exit idle");
+                            self.state = self.saved_state;
+                        }
+                    }
+                    MenuSubState::DisplayMode(MenuMode::Debug) => {
+                        if button == ButtonCode::CcSelect || button == ButtonCode::CcLeft {
+                            debug!("menu: exit debug screen (long-press)");
+                            self.state = MenuSubState::Browsing;
+                        }
+                    }
+                    MenuSubState::DisplayMode(MenuMode::PixelTest) => {
+                        debug!("menu: exit pixel test");
+                        self.state = MenuSubState::Browsing;
+                    }
+                    _ => match button {
+                        ButtonCode::CcUp | ButtonCode::CcDown => {
+                            self.process_event(MenuEvents::Press(button));
+                        }
+                        ButtonCode::CcLeft | ButtonCode::CcRight
+                            if matches!(
+                                self.state,
+                                MenuSubState::EditingValue { .. }
+                                    | MenuSubState::EditingKeyBinding { .. }
+                                    | MenuSubState::WikiEdit { .. }
+                            ) =>
+                        {
+                            self.process_event(MenuEvents::Press(button));
+                        }
+                        _ => {}
+                    },
+                }
+            }
+            MenuEvents::Repeat(button) => {
+                if matches!(self.state, MenuSubState::IdleMode)
+                    && matches!(
+                        button,
+                        ButtonCode::CcUp
+                            | ButtonCode::CcDown
+                            | ButtonCode::CcLeft
+                            | ButtonCode::CcRight
+                            | ButtonCode::CcSelect
+                    )
+                {
+                    debug!("menu: exit idle");
+                    self.state = self.saved_state;
+                    return;
+                }
+                let is_editing = matches!(
+                    self.state,
+                    MenuSubState::EditingValue { .. }
+                        | MenuSubState::EditingKeyBinding { .. }
+                        | MenuSubState::WikiEdit { .. }
+                );
+                match button {
+                    ButtonCode::CcUp | ButtonCode::CcDown => {
+                        self.process_event(MenuEvents::Press(button));
+                    }
+                    ButtonCode::CcLeft | ButtonCode::CcRight if is_editing => {
+                        self.process_event(MenuEvents::Press(button));
+                    }
+                    _ => {}
+                }
+            }
+            MenuEvents::Idle => {
+                if !matches!(self.state, MenuSubState::IdleMode) {
+                    debug!("menu: idle");
+                    self.saved_state = self.state;
+                    self.state = MenuSubState::IdleMode;
+                }
+            }
         }
     }
 
@@ -995,6 +1094,11 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
     ) {
         let current_state = self.state;
         match current_state {
+            MenuSubState::IdleMode => self.print_debug_display(
+                current_combined_button_state,
+                encoder_p1_count,
+                encoder_p2_count,
+            ),
             MenuSubState::DisplayMode(MenuMode::Debug) => self.print_debug_display(
                 current_combined_button_state,
                 encoder_p1_count,

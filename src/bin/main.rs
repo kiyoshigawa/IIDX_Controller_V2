@@ -526,7 +526,8 @@ fn main() -> ! {
                 }
 
                 // Update inputs using any new SIO data first so that events can fire based on changes:
-                input_handler.detect_input_changes();
+                let now = timer.get_counter().ticks();
+                input_handler.detect_input_changes(now);
 
                 // core1 led strip update:
                 if timer.get_counter().ticks() > (last_led_update_ticks + LED_FRAME_TICKS) {

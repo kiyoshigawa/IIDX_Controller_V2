@@ -10,10 +10,39 @@ use defmt::debug;
 use display_interface::WriteOnlyDataCommand;
 use strum::IntoEnumIterator;
 
+/// Time a button must be held before a LongPress event fires (1 second at 1 µs/tick).
+const DEFAULT_LONG_PRESS_DELAY_TICKS: u64 = 1_000_000;
+
+/// Interval between Repeat events after the long press fires (200 ms).
+const DEFAULT_REPEAT_INTERVAL_TICKS: u64 = 200_000;
+
+/// Time of inactivity on CC buttons before sending a menu idle event (30 seconds).
+const MENU_IDLE_TIMEOUT_TICKS: u64 = 30_000_000;
+
+/// Per-button hold-tracking state for long-press and repeat detection.
+#[derive(Clone, Copy)]
+struct ButtonHoldState {
+    press_start_tick: u64,
+    long_press_fired: bool,
+    last_repeat_tick: u64,
+}
+
+impl ButtonHoldState {
+    const fn default() -> Self {
+        Self {
+            press_start_tick: 0,
+            long_press_fired: false,
+            last_repeat_tick: 0,
+        }
+    }
+}
+
 /// Events generated when a button's debounced state transitions.
 pub(crate) enum ButtonEvents {
     Press(ButtonCode),
     Release(ButtonCode),
+    LongPress(ButtonCode),
+    Repeat(ButtonCode),
 }
 
 /// This will take data from the physical inputs that was passed through the SIO FIFO buffers
@@ -34,6 +63,12 @@ pub struct InputHandler<'a, D> {
     /// = logical (encoder-derived) buttons:
     pub current_combined_button_state: u64,
     pub previous_combined_button_state: u64,
+    /// Per-button hold-tracking state, indexed by ButtonCode as usize.
+    hold_states: [ButtonHoldState; 36],
+    /// Tick of the last CC button press (used for menu idle timeout).
+    last_cc_press_tick: u64,
+    /// Whether the idle event has already been sent for the current idle period.
+    idle_event_sent: bool,
 }
 
 impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
@@ -47,6 +82,9 @@ impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
             encoder_p2_direction: EncoderDirection::Stopped,
             current_combined_button_state: 0_u64,
             previous_combined_button_state: 0_u64,
+            hold_states: [ButtonHoldState::default(); 36],
+            last_cc_press_tick: 0,
+            idle_event_sent: false,
         }
     }
 
@@ -58,6 +96,15 @@ impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
                 self.menu_handler.process_event(MenuEvents::Press(button));
             }
             ButtonEvents::Release(button) => debug!("btn: {} released", button as usize),
+            ButtonEvents::LongPress(button) => {
+                debug!("btn: {} long-press", button as usize);
+                self.menu_handler
+                    .process_event(MenuEvents::LongPress(button));
+            }
+            ButtonEvents::Repeat(button) => {
+                debug!("btn: {} repeat", button as usize);
+                self.menu_handler.process_event(MenuEvents::Repeat(button));
+            }
         };
     }
 
@@ -74,7 +121,9 @@ impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
     /// Builds the combined u64 state from the separate physical and logical
     /// pieces, then scans every [`ButtonCode`] bit to detect transitions and
     /// triggers events when button states change.
-    pub fn detect_input_changes(&mut self) {
+    ///
+    /// `current_tick` is the current timer tick value (used for long-press/repeat timing).
+    pub fn detect_input_changes(&mut self, current_tick: u64) {
         // ── Build combined state from source-of-truth fields ──
         let mut combined = self.current_button_state as u64;
         match self.encoder_p1_direction {
@@ -89,7 +138,7 @@ impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
         }
         self.current_combined_button_state = combined;
 
-        // ── Uniform bit-scan over every ButtonCode ──
+        // ── Pass 1: Uniform bit-scan over every ButtonCode for transitions ──
         let current = self.current_combined_button_state;
         let previous = self.previous_combined_button_state;
         for code in ButtonCode::iter() {
@@ -97,10 +146,64 @@ impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
             let pressed = (current >> offset) & 1 == 1;
             let was_pressed = (previous >> offset) & 1 == 1;
             if pressed && !was_pressed {
+                self.hold_states[offset] = ButtonHoldState {
+                    press_start_tick: current_tick,
+                    long_press_fired: false,
+                    last_repeat_tick: 0,
+                };
                 self.process_event(ButtonEvents::Press(code));
+                if matches!(
+                    code,
+                    ButtonCode::CcUp
+                        | ButtonCode::CcDown
+                        | ButtonCode::CcLeft
+                        | ButtonCode::CcRight
+                        | ButtonCode::CcSelect
+                ) {
+                    self.last_cc_press_tick = current_tick;
+                    self.idle_event_sent = false;
+                }
             } else if !pressed && was_pressed {
+                self.hold_states[offset] = ButtonHoldState::default();
                 self.process_event(ButtonEvents::Release(code));
             }
+        }
+
+        // ── Pass 2: Check held buttons for long-press and repeat ──
+        for code in ButtonCode::iter() {
+            let offset = code as usize;
+            let pressed = (current >> offset) & 1 == 1;
+            if !pressed {
+                continue;
+            }
+            let state = &mut self.hold_states[offset];
+            if state.press_start_tick == 0 {
+                // Button was already held before we started tracking; ignore.
+                continue;
+            }
+            if !state.long_press_fired
+                && current_tick.wrapping_sub(state.press_start_tick)
+                    >= DEFAULT_LONG_PRESS_DELAY_TICKS
+            {
+                state.long_press_fired = true;
+                state.last_repeat_tick = current_tick;
+                self.process_event(ButtonEvents::LongPress(code));
+            } else if state.long_press_fired
+                && current_tick.wrapping_sub(state.last_repeat_tick)
+                    >= DEFAULT_REPEAT_INTERVAL_TICKS
+            {
+                state.last_repeat_tick = current_tick;
+                self.process_event(ButtonEvents::Repeat(code));
+            }
+        }
+
+        // ── Menu idle timeout ──
+        if !self.idle_event_sent
+            && self.last_cc_press_tick != 0
+            && current_tick.wrapping_sub(self.last_cc_press_tick) >= MENU_IDLE_TIMEOUT_TICKS
+        {
+            self.idle_event_sent = true;
+            self.menu_handler.process_event(MenuEvents::Idle);
         }
     }
 }
