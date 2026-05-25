@@ -16,9 +16,13 @@ pub mod led_strip;
 pub mod lighting_consts;
 pub mod lighting_handler;
 pub mod menu_handler;
+pub mod menu_layout;
+pub mod menu_settings;
 
 pub use flash_storage::FLASH_STORAGE_BASE_ADDR;
 pub use flash_storage::{ButtonConfig, EncoderConfig, FlashStoragePersistentMemory};
+pub use flash_storage::{LightingConfig, PlayerAnimConfig};
+pub use lighting_consts::*;
 
 /// Type alias for the OLED display used throughout this project.
 pub type OledDisplay<D> = Ssd1306<D, DisplaySize128x64, BufferedGraphicsMode<DisplaySize128x64>>;

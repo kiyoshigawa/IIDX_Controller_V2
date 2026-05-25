@@ -5,7 +5,8 @@
 //! forwards events to [`MenuHandler`](crate::menu_handler::MenuHandler).
 
 use crate::lighting_handler::{LightingEvent, LightingHandler};
-use crate::menu_handler::{MenuEvents, MenuHandler};
+use crate::menu_handler::MenuHandler;
+use crate::menu_layout::MenuEvents;
 use crate::{ButtonCode, EncoderDirection};
 use defmt::debug;
 use display_interface::WriteOnlyDataCommand;
