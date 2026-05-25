@@ -288,7 +288,7 @@ impl LightingHandler {
             LightingEvent::EncoderMoved { player, count } => {
                 // In Rotate mode (bg_mode=0) the rainbow rotates independently.
                 // Only apply encoder offset in Follow mode (bg_mode=1).
-                if self.player_cfg.get(player).map(|c| c.bg_mode) == Some(1) {
+                if player < NUM_PLAYERS && self.player_cfg[player].bg_mode == 1 {
                     const STEPS_PER_REV: i32 = 2400;
                     let normalized = count.rem_euclid(STEPS_PER_REV);
                     let offset = ((normalized as u32 * (u16::MAX as u32)) / (STEPS_PER_REV as u32)) as u16;
@@ -302,7 +302,7 @@ impl LightingHandler {
             LightingEvent::DirectionChanged { player, direction } => {
                 // In Follow mode, reverse rotation to match wiki spin direction.
                 // Stopped is ignored so the animation keeps rotating in the last direction.
-                if self.player_cfg.get(player).map(|c| c.bg_mode) == Some(1) {
+                if player < NUM_PLAYERS && self.player_cfg[player].bg_mode == 1 {
                     let dir = match direction {
                         crate::EncoderDirection::Positive => animations::Direction::Positive,
                         crate::EncoderDirection::Negative => animations::Direction::Negative,
@@ -316,7 +316,8 @@ impl LightingHandler {
                 }
             }
             LightingEvent::ButtonPressed { player } => {
-                if let Some(cfg) = self.player_cfg.get(player) {
+                if player < NUM_PLAYERS {
+                    let cfg = &self.player_cfg[player];
                     if cfg.trig_mode == 0 { return; }
                     // Trigger direction: config sets starting direction, toggles each fire
                     let dir = match (cfg.trig_dir, self.trigger_dir_toggle[player]) {
