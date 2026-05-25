@@ -13,6 +13,7 @@
 
 use crate::flash_storage::PlayerAnimConfig;
 use crate::led_strip::{LEDS_PER_SIDE, NUM_LEDS};
+use crate::NUM_PLAYERS;
 use embedded_time::rate::Hertz;
 use lighting_controller::animations::Animatable;
 use lighting_controller::{self as lc, animations, utility};
@@ -64,13 +65,13 @@ pub struct LightingHandler {
     frame_rate: Hertz,
 
     /// Shadow copy of per-player lighting config for on-the-fly trigger param construction.
-    player_cfg: [PlayerAnimConfig; 2],
+    player_cfg: [PlayerAnimConfig; NUM_PLAYERS],
 
     /// Last-applied config for efficient change detection during live sync.
     last_applied_cfg: crate::flash_storage::LightingConfig,
 
     /// Alternates trigger direction on each button press per player.
-    trigger_dir_toggle: [bool; 2],
+    trigger_dir_toggle: [bool; NUM_PLAYERS],
 }
 
 impl LightingHandler {
@@ -111,24 +112,9 @@ impl LightingHandler {
             a2,
             brightness: DEFAULT_BRIGHTNESS,
             frame_rate,
-            player_cfg: [PlayerAnimConfig {
-                bg_mode: 0, bg_rainbow: 0, bg_subdivisions: 0, bg_speed_ds: 0, bg_dir: 0,
-                fg_mode: 0, fg_rainbow: 0, fg_subdivisions: 0, fg_speed_ds: 0,
-                fg_step_ds: 0, fg_px_per_group: 0, fg_dir: 0,
-                trig_mode: 0, trig_rainbow: 0, trig_fade_in_ms: 0, trig_fade_out_ms: 0, trig_width: 0,
-                trig_dir: 0, trig_offset: 0, trig_dur_s: 0,
-            }; 2],
-            last_applied_cfg: crate::flash_storage::LightingConfig {
-                players: [PlayerAnimConfig {
-                    bg_mode: 0, bg_rainbow: 0, bg_subdivisions: 0, bg_speed_ds: 0, bg_dir: 0,
-                    fg_mode: 0, fg_rainbow: 0, fg_subdivisions: 0, fg_speed_ds: 0,
-                    fg_step_ds: 0, fg_px_per_group: 0, fg_dir: 0,
-                    trig_mode: 0, trig_rainbow: 0, trig_fade_in_ms: 0, trig_fade_out_ms: 0, trig_width: 0,
-                    trig_dir: 0, trig_offset: 0, trig_dur_s: 0,
-                }; 2],
-                brightness: 0,
-            },
-            trigger_dir_toggle: [false; 2],
+            player_cfg: [PlayerAnimConfig::default(); NUM_PLAYERS],
+            last_applied_cfg: crate::flash_storage::LightingConfig::default(),
+            trigger_dir_toggle: [false; NUM_PLAYERS],
         }
     }
 

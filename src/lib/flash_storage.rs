@@ -92,7 +92,7 @@ pub struct EncoderConfig {
 /// Per-player animation configuration stored in flash.
 /// Each field is an index into the corresponding `lighting_consts::*_NAMES` array.
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Default)]
 pub struct PlayerAnimConfig {
     // BG settings
     pub bg_mode: u8,    // index into BG_MODE_NAMES
@@ -123,7 +123,7 @@ pub struct PlayerAnimConfig {
 
 /// Lighting configuration stored in flash.
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Default)]
 pub struct LightingConfig {
     pub players: [PlayerAnimConfig; 2], // [0]=P1, [1]=P2
     pub brightness: u8,
@@ -283,52 +283,29 @@ impl FlashStoragePersistentMemory {
             },
         ];
 
-        let players = [
-            PlayerAnimConfig {
-                bg_mode: 1,    // Follow
-                bg_rainbow: 0, // Oklch
-                bg_subdivisions: 1,
-                bg_speed_ds: 50, // 5.0 s
-                bg_dir: 0,
-                fg_mode: 0,    // Off
-                fg_rainbow: 4, // RGB
-                fg_subdivisions: 1,
-                fg_speed_ds: 50, // 5.0 s
-                fg_step_ds: 4,   // 0.4 s
-                fg_px_per_group: 1,
-                fg_dir: 0,
-                trig_mode: 1,    // Pulse
-                trig_rainbow: 7, // Black
-                trig_fade_in_ms: 100,
-                trig_fade_out_ms: 500,
-                trig_width: 3,
-                trig_dir: 0,
-                trig_offset: 0,
-                trig_dur_s: 1,
-            },
-            PlayerAnimConfig {
-                bg_mode: 1,    // Follow
-                bg_rainbow: 0, // Oklch
-                bg_subdivisions: 1,
-                bg_speed_ds: 50, // 5.0 s
-                bg_dir: 0,
-                fg_mode: 0,    // Off
-                fg_rainbow: 4, // RGB
-                fg_subdivisions: 1,
-                fg_speed_ds: 50, // 5.0 s
-                fg_step_ds: 4,   // 0.4 s
-                fg_px_per_group: 1,
-                fg_dir: 0,
-                trig_mode: 1,    // Pulse
-                trig_rainbow: 7, // Black
-                trig_fade_in_ms: 100,
-                trig_fade_out_ms: 500,
-                trig_width: 3,
-                trig_dir: 0,
-                trig_offset: 0,
-                trig_dur_s: 1,
-            },
-        ];
+        let p1_default = PlayerAnimConfig {
+            bg_mode: 1,    // Follow
+            bg_rainbow: 0, // Oklch
+            bg_subdivisions: 1,
+            bg_speed_ds: 50, // 5.0 s
+            bg_dir: 0,
+            fg_mode: 0,    // Off
+            fg_rainbow: 4, // RGB
+            fg_subdivisions: 1,
+            fg_speed_ds: 50, // 5.0 s
+            fg_step_ds: 4,   // 0.4 s
+            fg_px_per_group: 1,
+            fg_dir: 0,
+            trig_mode: 1,    // Pulse
+            trig_rainbow: 7, // Black
+            trig_fade_in_ms: 100,
+            trig_fade_out_ms: 500,
+            trig_width: 3,
+            trig_dir: 0,
+            trig_offset: 0,
+            trig_dur_s: 1,
+        };
+        let players = [p1_default; 2];
         let lighting = LightingConfig {
             players,
             brightness: 200,

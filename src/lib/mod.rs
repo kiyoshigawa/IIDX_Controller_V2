@@ -38,6 +38,9 @@ pub const NUM_BUTTONS: usize = 27;
 /// Number of encoders.
 pub const NUM_ENCODERS: usize = 2;
 
+/// Number of players (sides of the LED strip).
+pub const NUM_PLAYERS: usize = 2;
+
 /// Logical buttons (not actual physical single-button-to-GPIO) start at this bit position in the
 /// combined u64 state variable on core1. Physical button bits occupy 0–31.
 const LOGICAL_BUTTON_OFFSET: usize = 32;
