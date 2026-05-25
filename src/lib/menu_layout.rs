@@ -87,7 +87,7 @@ pub(crate) enum MenuAction {
     PerformReset,
     Reboot,
     ShowCustom,
-    ReturnToCustom,
+    ReturnToCustom(usize),
     ResetField(usize),
 }
 
@@ -375,13 +375,13 @@ macro_rules! define_button_menus {
 define_button_menus! {
     (P1_1, "P1_1"), (P1_2, "P1_2"), (P1_3, "P1_3"), (P1_4, "P1_4"),
     (P1_5, "P1_5"), (P1_6, "P1_6"), (P1_7, "P1_7"),
-    (P1Start, "P1St"), (P1Select, "P1Sl"),
+    (P1Start, "P1ST"), (P1Select, "P1SL"),
     (P2_1, "P2_1"), (P2_2, "P2_2"), (P2_3, "P2_3"), (P2_4, "P2_4"),
     (P2_5, "P2_5"), (P2_6, "P2_6"), (P2_7, "P2_7"),
-    (P2Start, "P2St"), (P2Select, "P2Sl"),
+    (P2Start, "P2ST"), (P2Select, "P2SL"),
     (Escape, "Esc"),
-    (CcUp, "CCUp"), (CcDown, "CCDn"), (CcLeft, "CCLt"), (CcRight, "CCRt"), (CcSelect, "CCSl"),
-    (VolumeUp, "VUp"), (VolumeDown, "VDn"), (Mute, "Mute"),
+    (CcUp, "CCUP"), (CcDown, "CCDN"), (CcLeft, "CCLT"), (CcRight, "CCRT"), (CcSelect, "CCSL"),
+    (VolumeUp, "VUP"), (VolumeDown, "VDN"), (Mute, "Mute"),
 }
 
 // ── Top-level menu definitions ─────────────────────────────────────
@@ -490,6 +490,13 @@ pub(crate) static ENCODER_SENS_MENU: MenuLevel = MenuLevel {
             action: MenuAction::GoBack,
         },
     ],
+};
+
+/// Dummy level that exists purely to give Wiki Edit a real stack entry.
+/// The wiki edit screen is custom-drawn and has no menu options.
+pub(crate) static WIKI_EDIT_DUMMY: MenuLevel = MenuLevel {
+    title: "Wiki Edit",
+    options: &[],
 };
 
 pub(crate) static LIGHTING_MENU: MenuLevel = MenuLevel {

@@ -264,7 +264,7 @@ fn main() -> ! {
             config.buttons[18].debounce_ticks,
         ),
         ButtonState::new(
-            "CC_Up",
+            "CC_UP",
             pins.gpio19.into_pull_down_input().into_dyn_pin(),
             u8_to_key(config.buttons[19].key),
             config.buttons[19].debounce_ticks,

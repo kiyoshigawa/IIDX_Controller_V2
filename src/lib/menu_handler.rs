@@ -11,7 +11,10 @@ use defmt::debug;
 use display_interface::WriteOnlyDataCommand;
 use embedded_graphics::{
     image::{Image, ImageRaw},
-    mono_font::{MonoTextStyle, MonoTextStyleBuilder, ascii::FONT_9X18_BOLD},
+    mono_font::{
+        MonoTextStyle, MonoTextStyleBuilder,
+        ascii::{FONT_6X10, FONT_9X18_BOLD},
+    },
     pixelcolor::BinaryColor,
     prelude::*,
     primitives::{Line, PrimitiveStyle, Rectangle},
@@ -21,11 +24,13 @@ use embedded_graphics::{
 use crate::menu_layout::MenuOption;
 use crate::menu_layout::{
     Commit, Editor, Flip, FmtBuf, MAX_MENU_DEPTH, MenuAction, MenuEvents, MenuLevel, MenuMode,
-    PromptChoice, PromptSide, ROOT_MENU, StackItem, VALID_KEYS, clamp_step, flip_for, key_index,
-    option_line_indices,
+    PromptChoice, PromptSide, ROOT_MENU, StackItem, VALID_KEYS, WIKI_EDIT_DUMMY, clamp_step,
+    flip_for, key_index, option_line_indices,
 };
 use crate::menu_settings::WikiEditState;
-use crate::menu_settings::{SettingKey, ValueKey, build_editor, for_each_changed_field, key_name};
+use crate::menu_settings::{
+    SettingKey, ValueKey, build_editor, for_each_changed_field, format_change_item, key_name,
+};
 use crate::{
     BG_MODE_NAMES, ButtonCode, DEFAULT_BUTTON_DEBOUNCE_TICKS, DIR_NAMES, FG_MODE_NAMES,
     FlashStoragePersistentMemory, NUM_BUTTONS, OFFSET_NAMES, OledDisplay, RAINBOW_NAMES,
@@ -50,6 +55,20 @@ const VISIBLE_WIDTH: usize = 13;
 
 /// Y-origin of each of the 4 text lines on the OLED.
 const LINE_Y: [i32; 4] = [0, 16, 32, 48];
+
+// ── Small-font constants (FONT_6X10) for labeled-edit screens ─────
+
+/// Width of a single character in the FONT_6X10 font (pixels).
+const CHAR_W_SMALL: i32 = 6;
+
+/// Visible character width with the 6px font (128/6 ≈ 21).
+#[allow(dead_code)]
+const VISIBLE_WIDTH_SMALL: usize = 21;
+
+/// Y-origin of the 5 content lines and the separator for labeled-edit screens.
+/// LINE_Y_LABELED[i] is the y-start of content line i (0..5).
+/// Separator drawn at y=11, content starts at y=12.
+const LINE_Y_LABELED: [i32; 5] = [12, 22, 32, 42, 52];
 
 /// Top-left corner of the frame-counter text in debug screen
 const FRAME_COUNTER_POS: Point = Point::new(0, 0);
@@ -190,9 +209,10 @@ pub struct MenuHandler<'a, D> {
     pub display: &'a mut OledDisplay<D>,
     debug_bufs: [FmtBuf; 4],
     title_buf: FmtBuf,
-    label_bufs: [FmtBuf; 3],
-    value_bufs: [FmtBuf; 3],
+    label_bufs: [FmtBuf; 5],
+    value_bufs: [FmtBuf; 5],
     text_style: MonoTextStyle<'static, BinaryColor>,
+    text_style_small: MonoTextStyle<'static, BinaryColor>,
     pub frames_rendered: u64,
     state: MenuSubState,
     saved_state: MenuSubState,
@@ -220,6 +240,10 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             .font(&FONT_9X18_BOLD)
             .text_color(BinaryColor::On)
             .build();
+        let text_style_small = MonoTextStyleBuilder::new()
+            .font(&FONT_6X10)
+            .text_color(BinaryColor::On)
+            .build();
         let mut stack = [None; MAX_MENU_DEPTH];
         stack[0] = Some(StackItem {
             level: &ROOT_MENU,
@@ -229,9 +253,22 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             display,
             debug_bufs: [FmtBuf::new(), FmtBuf::new(), FmtBuf::new(), FmtBuf::new()],
             title_buf: FmtBuf::new(),
-            label_bufs: [FmtBuf::new(), FmtBuf::new(), FmtBuf::new()],
-            value_bufs: [FmtBuf::new(), FmtBuf::new(), FmtBuf::new()],
+            label_bufs: [
+                FmtBuf::new(),
+                FmtBuf::new(),
+                FmtBuf::new(),
+                FmtBuf::new(),
+                FmtBuf::new(),
+            ],
+            value_bufs: [
+                FmtBuf::new(),
+                FmtBuf::new(),
+                FmtBuf::new(),
+                FmtBuf::new(),
+                FmtBuf::new(),
+            ],
             text_style,
+            text_style_small,
             frames_rendered: 0,
             state: MenuSubState::IdleMode,
             saved_state: MenuSubState::Browsing,
@@ -429,7 +466,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 self.state = Self::build_prompt(
                     ["Reset value", "to default", "state?"],
                     MenuAction::ResetField(cursor),
-                    MenuAction::ReturnToCustom,
+                    MenuAction::ReturnToCustom(cursor),
                 );
             }
             _ => {}
@@ -678,6 +715,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 ButtonCode::CcLeft => {
                     self.prompt_if_unsaved(|s| {
                         debug!("menu: wiki exit");
+                        s.pop_level();
                         s.state = MenuSubState::Browsing;
                     });
                 }
@@ -743,9 +781,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
     ) {
         match self.state {
             MenuSubState::Prompt { .. } => self.render_prompt(),
-            MenuSubState::ShowCustom { cursor } => {
-                self.render_show_custom(cursor, current_combined_button_state)
-            }
+            MenuSubState::ShowCustom { cursor } => self.render_custom_edit(cursor),
             MenuSubState::IdleMode => self.print_debug_display(
                 current_combined_button_state,
                 encoder_p1_count,
@@ -760,13 +796,150 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             MenuSubState::Browsing => self.render_browsing_screen(),
             MenuSubState::Editing { .. } => self.render_editing_screen(),
             MenuSubState::EditingKeyBinding { .. } => self.render_keybinding_screen(),
-            MenuSubState::WikiEdit(ref w) => self.render_wiki_edit(
-                w.encoder,
-                w.selected,
-                w.editing,
-                w.working_threshold,
-                w.working_timeout,
-            ),
+            MenuSubState::WikiEdit(w) => self.render_wiki_edit(&w),
+        }
+    }
+
+    /// Shared renderer for labeled-edit screens (Wiki Edit, Show Custom).
+    /// Draws a title, separator, and 5 content lines using FONT_6X10.
+    /// `item_fn` receives (item_index, label_buf, value_buf) for each item.
+    fn render_labeled_edit(
+        &mut self,
+        title: &str,
+        total: usize,
+        cursor: usize,
+        editing: bool,
+        item_fn: &mut dyn FnMut(usize, &mut FmtBuf, &mut FmtBuf),
+    ) {
+        for buf in &mut self.label_bufs {
+            buf.reset();
+        }
+        for buf in &mut self.value_bufs {
+            buf.reset();
+        }
+
+        let cursor = if total == 0 { 0 } else { cursor.min(total - 1) };
+
+        if total > 0 {
+            if cursor == 0 {
+                // Top of list (---, blank, current-l, current-v, next-or---)
+                write!(self.label_bufs[0], "---").unwrap();
+                if total == 1 {
+                    // Single item: ---, blank, current-l, current-v, ---
+                    item_fn(0, &mut self.label_bufs[2], &mut self.value_bufs[3]);
+                    write!(self.label_bufs[4], "---").unwrap();
+                } else {
+                    // ---, blank, current-l, current-v, next-l, next-v
+                    item_fn(0, &mut self.label_bufs[1], &mut self.value_bufs[2]);
+                    item_fn(1, &mut self.label_bufs[3], &mut self.value_bufs[4]);
+                }
+            } else {
+                // General case: prev-l, prev-v, current-l, current-v, next-or---
+                item_fn(cursor - 1, &mut self.label_bufs[0], &mut self.value_bufs[1]);
+                item_fn(cursor, &mut self.label_bufs[2], &mut self.value_bufs[3]);
+                if cursor + 1 < total {
+                    // Next item label only — no value shown in the general case.
+                    let mut discard = FmtBuf::new();
+                    item_fn(cursor + 1, &mut self.label_bufs[4], &mut discard);
+                } else {
+                    write!(self.label_bufs[4], "---").unwrap();
+                }
+            }
+
+            // Add > chevron to current item's label
+            let current_label_slot = if cursor == 0 && total > 1 { 1 } else { 2 };
+            let cur_label = self.label_bufs[current_label_slot].as_str();
+            if !cur_label.is_empty() {
+                let mut temp = FmtBuf::new();
+                write!(temp, ">{}", cur_label).unwrap();
+                self.label_bufs[current_label_slot] = temp;
+            }
+        }
+
+        // ── Draw ──
+        self.display.clear(BinaryColor::Off).unwrap();
+
+        // Unsaved-changes indicator
+        if self.settings_changed {
+            Text::with_baseline(
+                "*",
+                Point::new(DISPLAY_R - CHAR_W_SMALL, 0),
+                self.text_style_small,
+                Baseline::Top,
+            )
+            .draw(self.display)
+            .unwrap();
+        }
+
+        // Title
+        Text::with_baseline(
+            title,
+            Point::new(0, 0),
+            self.text_style_small,
+            Baseline::Top,
+        )
+        .draw(self.display)
+        .unwrap();
+
+        // Separator at y=11
+        Line::new(Point::new(0, 11), Point::new(DISPLAY_R, 11))
+            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+            .draw(self.display)
+            .unwrap();
+
+        // Content lines at LINE_Y_LABELED[0..4]
+        for slot in 0..5 {
+            let y = LINE_Y_LABELED[slot];
+            let label = self.label_bufs[slot].as_str();
+            let value = self.value_bufs[slot].as_str();
+
+            if !label.is_empty() {
+                Text::with_baseline(
+                    label,
+                    Point::new(0, y),
+                    self.text_style_small,
+                    Baseline::Top,
+                )
+                .draw(self.display)
+                .unwrap();
+            }
+
+            if !value.is_empty() {
+                let mut text = Text::with_alignment(
+                    value,
+                    Point::new(124, y),
+                    self.text_style_small,
+                    Alignment::Right,
+                );
+                text.text_style.baseline = Baseline::Top;
+                text.draw(self.display).unwrap();
+            }
+        }
+
+        // Highlight box on current value when editing
+        if editing {
+            let value_slot = if cursor == 0 && total > 1 { 2 } else { 3 };
+            let v = self.value_bufs[value_slot].as_str();
+            let vlen = v.as_bytes().len() as i32 * CHAR_W_SMALL;
+            let box_left = 123 - vlen;
+            let box_left = if box_left < 0 { 0 } else { box_left };
+            Rectangle::new(
+                Point::new(box_left, LINE_Y_LABELED[value_slot] + 1),
+                Size::new((DISPLAY_R - box_left) as u32, 10),
+            )
+            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+            .draw(self.display)
+            .unwrap();
+        }
+
+        self.display.flush().unwrap();
+
+        self.title_buf.reset();
+        for buf in &mut self.label_bufs {
+            buf.reset();
+        }
+        for buf in &mut self.value_bufs {
+            buf.reset();
         }
     }
 
@@ -985,105 +1158,31 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
         self.display.flush().unwrap();
     }
 
-    /// Renders the dedicated wiki-edit screen: two parameters displayed vertically
-    /// with labels on even lines and indented values on odd lines.
-    fn render_wiki_edit(
-        &mut self,
-        encoder: usize,
-        selected: usize,
-        editing: bool,
-        working_threshold: u32,
-        working_timeout: u32,
-    ) {
-        for buf in &mut self.debug_bufs {
-            buf.reset();
-        }
-        for buf in &mut self.value_bufs {
-            buf.reset();
-        }
-
+    /// Renders the wiki-edit screen via the shared `render_labeled_edit`.
+    fn render_wiki_edit(&mut self, w: &WikiEditState) {
         let t_meta = SettingKey::EncoderStepThreshold(0).meta();
         let m_meta = SettingKey::EncoderMoveTimeout(0).meta();
-        let t_val = working_threshold / t_meta.divisor;
-        let m_val = working_timeout / m_meta.divisor;
+        let t_val = w.working_threshold / t_meta.divisor;
+        let m_val = w.working_timeout / m_meta.divisor;
+        let enc = w.encoder + 1;
 
-        // Labels on debug_bufs (left-aligned, odd line indices)
-        write!(
-            self.debug_bufs[0],
-            "{}P{} Timeout",
-            if selected == 0 { ">" } else { " " },
-            encoder + 1
-        )
-        .unwrap();
-        write!(
-            self.debug_bufs[2],
-            "{}P{} Threshold",
-            if selected == 1 { ">" } else { " " },
-            encoder + 1
-        )
-        .unwrap();
-
-        // Values on value_bufs (right-aligned, even line indices)
-        write!(self.value_bufs[0], "{} {}", m_val, m_meta.unit).unwrap();
-        write!(self.value_bufs[1], "{} {}", t_val, t_meta.unit).unwrap();
-
-        // Draw
-        let color = embedded_graphics::pixelcolor::BinaryColor::Off;
-        self.display.clear(color).unwrap();
-
-        // Unsaved-changes indicator
-        if self.settings_changed {
-            Text::with_baseline(
-                "*",
-                Point::new(DISPLAY_R - CHAR_W, 0),
-                self.text_style,
-                Baseline::Top,
-            )
-            .draw(self.display)
-            .unwrap();
-        }
-
-        for (i, y) in [(0usize, 0usize), (2, 2)] {
-            let s = self.debug_bufs[i].as_str();
-            if !s.is_empty() {
-                Text::with_baseline(s, Point::new(0, LINE_Y[y]), self.text_style, Baseline::Top)
-                    .draw(self.display)
-                    .unwrap();
-            }
-        }
-
-        for (vi, ly) in [(0usize, 1usize), (1, 3)] {
-            let v = self.value_bufs[vi].as_str();
-            if !v.is_empty() {
-                let mut text = Text::with_alignment(
-                    v,
-                    Point::new(124, LINE_Y[ly]),
-                    self.text_style,
-                    Alignment::Right,
-                );
-                text.text_style.baseline = Baseline::Top;
-                text.draw(self.display).unwrap();
-            }
-        }
-
-        if editing {
-            let value_idx = if selected == 0 { 0 } else { 1 };
-            let v = self.value_bufs[value_idx].as_str();
-            let vlen = v.as_bytes().len();
-            // Box from pixel 127 to 2px left of the value's first character
-            let box_left = 123 - (vlen as i32 * CHAR_W);
-            let box_left = if box_left < 0 { 0 } else { box_left };
-            let target_line = if selected == 0 { 1 } else { 3 };
-            Rectangle::new(
-                Point::new(box_left, LINE_Y[target_line]),
-                Size::new((DISPLAY_R - box_left) as u32, 16),
-            )
-            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-            .draw(self.display)
-            .unwrap();
-        }
-
-        self.display.flush().unwrap();
+        self.render_labeled_edit(
+            "Wiki Edit",
+            2,
+            w.selected,
+            w.editing,
+            &mut |idx, label, value| match idx {
+                0 => {
+                    write!(label, "P{} Timeout", enc).unwrap();
+                    write!(value, "{} {}", m_val, m_meta.unit).unwrap();
+                }
+                1 => {
+                    write!(label, "P{} Threshold", enc).unwrap();
+                    write!(value, "{} {}", t_val, t_meta.unit).unwrap();
+                }
+                _ => unreachable!(),
+            },
+        );
     }
 
     // ── Menu rendering ──
@@ -1354,9 +1453,10 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 };
             }
             MenuAction::OpenWikiEdit(encoder) => {
+                debug!("menu: wiki edit P{}", encoder + 1);
+                self.push_level(&WIKI_EDIT_DUMMY);
                 let t_val = self.read_setting(SettingKey::EncoderStepThreshold(encoder));
                 let m_val = self.read_setting(SettingKey::EncoderMoveTimeout(encoder));
-                debug!("menu: wiki edit P{}", encoder + 1);
                 self.state = MenuSubState::WikiEdit(WikiEditState {
                     encoder,
                     selected: 0,
@@ -1426,23 +1526,34 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             }
             MenuAction::ResetField(idx) => {
                 self.reset_field_to_default(idx);
-                self.state = MenuSubState::ShowCustom { cursor: 0 };
+                // After removing an item, clamp cursor to the new bounds
+                let total = self.count_changes();
+                if total == 0 {
+                    self.state = MenuSubState::Browsing;
+                } else {
+                    let cursor = idx.min(total - 1);
+                    self.state = MenuSubState::ShowCustom { cursor };
+                }
             }
-            MenuAction::ReturnToCustom => {
-                self.state = MenuSubState::ShowCustom { cursor: 0 };
+            MenuAction::ReturnToCustom(cursor) => {
+                let total = self.count_changes();
+                if total == 0 {
+                    self.state = MenuSubState::Browsing;
+                } else {
+                    let cursor = cursor.min(total - 1);
+                    self.state = MenuSubState::ShowCustom { cursor };
+                }
             }
         }
     }
 
-    /// Render the show-custom screen: three lines of changed settings.
-    fn render_show_custom(&mut self, cursor: usize, _state: u64) {
+    /// Render the show-custom screen via the shared `render_labeled_edit`.
+    fn render_custom_edit(&mut self, cursor: usize) {
         let defaults = crate::flash_storage::FlashStoragePersistentMemory::default();
-        // ── Count total changes ──
         let total = self.count_changes();
 
-        self.display.clear(BinaryColor::Off).unwrap();
-
         if total == 0 {
+            self.display.clear(BinaryColor::Off).unwrap();
             Text::with_baseline(
                 "No custom",
                 Point::new(0, LINE_Y[1]),
@@ -1474,66 +1585,16 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             idx.set(idx.get() + 1);
             true
         });
-        self.title_buf.reset();
-        core::write!(self.title_buf, "{}", section).ok();
 
-        // ── Draw title and current item ──
-        // Use label_bufs[0..2] for the three visible lines.
-        for buf in &mut self.label_bufs {
-            buf.reset();
-        }
-
-        // Fill the three visible lines using the shared helper.
-        for &(buf_idx, opt_idx) in &option_line_indices(total, cursor) {
-            let mut buf = self.label_bufs[buf_idx - 1];
-            if let Some(idx) = opt_idx {
-                self.format_change_item(&defaults, idx, &mut buf);
-            } else {
-                core::write!(buf, "--").ok();
-            }
-            self.label_bufs[buf_idx - 1] = buf;
-        }
-
-        // Title
-        let title = self.title_buf.as_str();
-        if !title.is_empty() {
-            Text::with_baseline(
-                title,
-                Point::new(0, LINE_Y[0]),
-                self.text_style,
-                Baseline::Top,
-            )
-            .draw(self.display)
-            .unwrap();
-        }
-
-        // Three option lines at y=16,32,48
-        for i in 0..3_usize {
-            let s = self.label_bufs[i].as_str();
-            if !s.is_empty() {
-                Text::with_baseline(
-                    s,
-                    Point::new(0, LINE_Y[i + 1]),
-                    self.text_style,
-                    Baseline::Top,
-                )
-                .draw(self.display)
-                .unwrap();
-            }
-        }
-
-        // Highlight box on the middle line (cursor is the second of three shown)
-        let hl = self.label_bufs[1].as_str();
-        let hl_len = hl.as_bytes().len() as i32 * CHAR_W;
-        Rectangle::new(
-            Point::new(0, LINE_Y[2] + 1),
-            Size::new(hl_len as u32 + 2, 15),
-        )
-        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-        .draw(self.display)
-        .unwrap();
-
-        self.display.flush().unwrap();
+        // Pass settings into the closure via raw pointer to avoid dual-borrow
+        // of self. render_labeled_edit only reads settings through this closure;
+        // it never writes them, so no aliasing violation occurs.
+        let settings_ptr = &self.settings as *const _;
+        self.render_labeled_edit(section, total, cursor, false, &mut |idx, label, value| {
+            // SAFETY: render_labeled_edit does not mutate settings.
+            let settings = unsafe { &*settings_ptr };
+            format_change_item(settings, &defaults, idx, label, value);
+        });
     }
 
     /// Display \"Rebooting...\" on the OLED before a system reset.

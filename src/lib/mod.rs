@@ -75,7 +75,7 @@ pub const IDLE_RESET_TIMEOUT_TICKS: u64 = 10_000_000 * 900;
 pub const SCREEN_REFRESH_TICKS: u64 = 100_000;
 
 /// Size (in bytes) of each `FmtBuf` text-buffer line.
-pub const BUF_SIZE: usize = 16;
+pub const BUF_SIZE: usize = 24;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Inter-core FIFO protocol and flash storage headers
@@ -149,8 +149,8 @@ impl ButtonCode {
             Self::P1_5 => "P1_5",
             Self::P1_6 => "P1_6",
             Self::P1_7 => "P1_7",
-            Self::P1Start => "P1_St",
-            Self::P1Select => "P1_Sl",
+            Self::P1Start => "P1_ST",
+            Self::P1Select => "P1_SL",
             Self::P2_1 => "P2_1",
             Self::P2_2 => "P2_2",
             Self::P2_3 => "P2_3",
@@ -158,16 +158,16 @@ impl ButtonCode {
             Self::P2_5 => "P2_5",
             Self::P2_6 => "P2_6",
             Self::P2_7 => "P2_7",
-            Self::P2Start => "P2_St",
-            Self::P2Select => "P2_Sl",
+            Self::P2Start => "P2_ST",
+            Self::P2Select => "P2_SL",
             Self::Escape => "Esc",
-            Self::CcUp => "CC_Up",
-            Self::CcDown => "CC_Dn",
-            Self::CcLeft => "CC_Lt",
-            Self::CcRight => "CC_Rt",
-            Self::CcSelect => "CC_Sl",
-            Self::VolumeUp => "V_Up",
-            Self::VolumeDown => "V_Dn",
+            Self::CcUp => "CC_UP",
+            Self::CcDown => "CC_DN",
+            Self::CcLeft => "CC_LT",
+            Self::CcRight => "CC_RT",
+            Self::CcSelect => "CC_SL",
+            Self::VolumeUp => "V_UP",
+            Self::VolumeDown => "V_DN",
             Self::Mute => "Mute",
             Self::P1Positive => "Enc1+",
             Self::P1Negative => "Enc1-",

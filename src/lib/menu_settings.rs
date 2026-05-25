@@ -1227,127 +1227,132 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
         }
         let _ = idx;
     }
+}
 
-    /// Write a single line of the show-custom list into `buf` for the `target_idx`th change.
-    pub(crate) fn format_change_item(
-        &self,
-        defaults: &crate::flash_storage::FlashStoragePersistentMemory,
-        target_idx: usize,
-        buf: &mut FmtBuf,
-    ) {
-        let mut idx = 0_usize;
-        for_each_changed_field(&self.settings, defaults, |field, cur, _def| {
-            if idx != target_idx {
-                idx += 1;
-                return true;
+/// Format a single changed setting into separate label and value buffers for the
+/// labeled-edit display. This is a free function so it can be called from closures
+/// without aliasing conflicts with `MenuHandler`'s `&mut self` methods.
+pub(crate) fn format_change_item(
+    settings: &crate::flash_storage::FlashStoragePersistentMemory,
+    defaults: &crate::flash_storage::FlashStoragePersistentMemory,
+    target_idx: usize,
+    label_buf: &mut FmtBuf,
+    value_buf: &mut FmtBuf,
+) {
+    let mut idx = 0_usize;
+    for_each_changed_field(settings, defaults, |field, cur, _def| {
+        if idx != target_idx {
+            idx += 1;
+            return true;
+        }
+        match field {
+            FieldDescriptor::ButtonDebounce(b) => {
+                let code = ButtonCode::from_repr(b).expect("index out of range");
+                write!(label_buf, "{} Debounce", code.short_label()).ok();
+                write!(value_buf, "{} ms", cur / 1_000).ok();
             }
-            match field {
-                FieldDescriptor::ButtonDebounce(b) => {
-                    let code = ButtonCode::from_repr(b).expect("index out of range");
-                    write!(buf, "{} db: {} ms", code.short_label(), cur / 1_000).ok();
-                }
-                FieldDescriptor::ButtonKey(b) => {
-                    let code = ButtonCode::from_repr(b).expect("index out of range");
-                    write!(buf, "{}: {}", code.short_label(), key_name(cur as u8)).ok();
-                }
-                FieldDescriptor::EncoderKeyUp(e) => {
-                    let name = if e == 0 { "P1Up" } else { "P2Up" };
-                    write!(buf, "{}: {}", name, key_name(cur as u8)).ok();
-                }
-                FieldDescriptor::EncoderKeyDown(e) => {
-                    let name = if e == 0 { "P1Dn" } else { "P2Dn" };
-                    write!(buf, "{}: {}", name, key_name(cur as u8)).ok();
-                }
-                FieldDescriptor::EncoderDebounce(e) => {
-                    let name = if e == 0 { "P1Edb" } else { "P2Edb" };
-                    write!(buf, "{}: {} ms", name, cur / 1_000).ok();
-                }
-                FieldDescriptor::EncoderStepThreshold(e) => {
-                    let name = if e == 0 { "P1Eth" } else { "P2Eth" };
-                    write!(buf, "{}: {} Steps", name, cur).ok();
-                }
-                FieldDescriptor::EncoderMoveTimeout(e) => {
-                    let name = if e == 0 { "P1Etm" } else { "P2Etm" };
-                    write!(buf, "{}: {} ms", name, cur / 1_000).ok();
-                }
-                FieldDescriptor::PlayerBgMode(p) => {
-                    let name = if p == 0 { "P1BgM" } else { "P2BgM" };
-                    write!(buf, "{}: {}", name, BG_MODE_NAMES[cur as usize]).ok();
-                }
-                FieldDescriptor::PlayerBgRainbow(p) => {
-                    let name = if p == 0 { "P1BgR" } else { "P2BgR" };
-                    write!(buf, "{}: {}", name, RAINBOW_NAMES[cur as usize]).ok();
-                }
-                FieldDescriptor::PlayerBgSpd(p) => {
-                    let name = if p == 0 { "P1BgS" } else { "P2BgS" };
-                    write!(buf, "{}: {} s", name, cur / 10).ok();
-                }
-                FieldDescriptor::PlayerBgSubdiv(p) => {
-                    let name = if p == 0 { "P1BgSd" } else { "P2BgSd" };
-                    write!(buf, "{}: {}", name, cur).ok();
-                }
-                FieldDescriptor::PlayerFgMode(p) => {
-                    let name = if p == 0 { "P1FgM" } else { "P2FgM" };
-                    write!(buf, "{}: {}", name, FG_MODE_NAMES[cur as usize]).ok();
-                }
-                FieldDescriptor::PlayerFgRainbow(p) => {
-                    let name = if p == 0 { "P1FgR" } else { "P2FgR" };
-                    write!(buf, "{}: {}", name, RAINBOW_NAMES[cur as usize]).ok();
-                }
-                FieldDescriptor::PlayerFgSpd(p) => {
-                    let name = if p == 0 { "P1FgS" } else { "P2FgS" };
-                    write!(buf, "{}: {} s", name, cur / 10).ok();
-                }
-                FieldDescriptor::PlayerFgSubdiv(p) => {
-                    let name = if p == 0 { "P1FgSd" } else { "P2FgSd" };
-                    write!(buf, "{}: {}", name, cur).ok();
-                }
-                FieldDescriptor::PlayerFgStep(p) => {
-                    let name = if p == 0 { "P1FgSt" } else { "P2FgSt" };
-                    write!(buf, "{}: {} s", name, cur / 10).ok();
-                }
-                FieldDescriptor::PlayerFgSize(p) => {
-                    let name = if p == 0 { "P1FgSz" } else { "P2FgSz" };
-                    write!(buf, "{}: {} px", name, cur).ok();
-                }
-                FieldDescriptor::PlayerTrigMode(p) => {
-                    let name = if p == 0 { "P1TrM" } else { "P2TrM" };
-                    write!(buf, "{}: {}", name, TRIG_MODE_NAMES[cur as usize]).ok();
-                }
-                FieldDescriptor::PlayerTrigRainbow(p) => {
-                    let name = if p == 0 { "P1TrR" } else { "P2TrR" };
-                    write!(buf, "{}: {}", name, RAINBOW_NAMES[cur as usize]).ok();
-                }
-                FieldDescriptor::PlayerTrigFdIn(p) => {
-                    let name = if p == 0 { "P1FdI" } else { "P2FdI" };
-                    write!(buf, "{}:{}ms", name, cur).ok();
-                }
-                FieldDescriptor::PlayerTrigFdOut(p) => {
-                    let name = if p == 0 { "P1FdO" } else { "P2FdO" };
-                    write!(buf, "{}:{}ms", name, cur).ok();
-                }
-                FieldDescriptor::PlayerTrigSize(p) => {
-                    let name = if p == 0 { "P1TrSz" } else { "P2TrSz" };
-                    write!(buf, "{}: {} px", name, cur).ok();
-                }
-                FieldDescriptor::PlayerTrigDir(p) => {
-                    let name = if p == 0 { "P1TrDr" } else { "P2TrDr" };
-                    write!(buf, "{}: {}", name, DIR_NAMES[cur as usize]).ok();
-                }
-                FieldDescriptor::PlayerTrigOffset(p) => {
-                    let name = if p == 0 { "P1TrOf" } else { "P2TrOf" };
-                    write!(buf, "{}:{}", name, OFFSET_NAMES[cur as usize]).ok();
-                }
-                FieldDescriptor::PlayerTrigDur(p) => {
-                    let name = if p == 0 { "P1TrDu" } else { "P2TrDu" };
-                    write!(buf, "{}: {} s", name, cur).ok();
-                }
-                FieldDescriptor::PlayerBrightness(p) => {
-                    let name = if p == 0 { "P1Brt" } else { "P2Brt" };
-                    write!(buf, "{}: {}", name, cur).ok();
-                }
+            FieldDescriptor::ButtonKey(b) => {
+                let code = ButtonCode::from_repr(b).expect("index out of range");
+                write!(label_buf, "{} Key", code.short_label()).ok();
+                write!(value_buf, "{}", key_name(cur as u8)).ok();
             }
-            false
-        });
-    }
+            FieldDescriptor::EncoderKeyUp(e) => {
+                write!(label_buf, "P{} Positive Key", e + 1).ok();
+                write!(value_buf, "{}", key_name(cur as u8)).ok();
+            }
+            FieldDescriptor::EncoderKeyDown(e) => {
+                write!(label_buf, "P{} Negative Key", e + 1).ok();
+                write!(value_buf, "{}", key_name(cur as u8)).ok();
+            }
+            FieldDescriptor::EncoderDebounce(e) => {
+                write!(label_buf, "P{} Enc Debounce", e + 1).ok();
+                write!(value_buf, "{} ms", cur / 1_000).ok();
+            }
+            FieldDescriptor::EncoderStepThreshold(e) => {
+                write!(label_buf, "P{} Threshold", e + 1).ok();
+                write!(value_buf, "{} Steps", cur).ok();
+            }
+            FieldDescriptor::EncoderMoveTimeout(e) => {
+                write!(label_buf, "P{} Timeout", e + 1).ok();
+                write!(value_buf, "{} ms", cur / 1_000).ok();
+            }
+            FieldDescriptor::PlayerBgMode(p) => {
+                write!(label_buf, "P{} BG Mode", p + 1).ok();
+                write!(value_buf, "{}", BG_MODE_NAMES[cur as usize]).ok();
+            }
+            FieldDescriptor::PlayerBgRainbow(p) => {
+                write!(label_buf, "P{} BG Rainbow", p + 1).ok();
+                write!(value_buf, "{}", RAINBOW_NAMES[cur as usize]).ok();
+            }
+            FieldDescriptor::PlayerBgSpd(p) => {
+                write!(label_buf, "P{} BG Speed", p + 1).ok();
+                write!(value_buf, "{} s", cur / 10).ok();
+            }
+            FieldDescriptor::PlayerBgSubdiv(p) => {
+                write!(label_buf, "P{} BG Subdiv", p + 1).ok();
+                write!(value_buf, "{}", cur).ok();
+            }
+            FieldDescriptor::PlayerFgMode(p) => {
+                write!(label_buf, "P{} FG Mode", p + 1).ok();
+                write!(value_buf, "{}", FG_MODE_NAMES[cur as usize]).ok();
+            }
+            FieldDescriptor::PlayerFgRainbow(p) => {
+                write!(label_buf, "P{} FG Rainbow", p + 1).ok();
+                write!(value_buf, "{}", RAINBOW_NAMES[cur as usize]).ok();
+            }
+            FieldDescriptor::PlayerFgSpd(p) => {
+                write!(label_buf, "P{} FG Speed", p + 1).ok();
+                write!(value_buf, "{} s", cur / 10).ok();
+            }
+            FieldDescriptor::PlayerFgSubdiv(p) => {
+                write!(label_buf, "P{} FG Subdiv", p + 1).ok();
+                write!(value_buf, "{}", cur).ok();
+            }
+            FieldDescriptor::PlayerFgStep(p) => {
+                write!(label_buf, "P{} FG Step", p + 1).ok();
+                write!(value_buf, "{} s", cur / 10).ok();
+            }
+            FieldDescriptor::PlayerFgSize(p) => {
+                write!(label_buf, "P{} FG Size", p + 1).ok();
+                write!(value_buf, "{} px", cur).ok();
+            }
+            FieldDescriptor::PlayerTrigMode(p) => {
+                write!(label_buf, "P{} Trig Mode", p + 1).ok();
+                write!(value_buf, "{}", TRIG_MODE_NAMES[cur as usize]).ok();
+            }
+            FieldDescriptor::PlayerTrigRainbow(p) => {
+                write!(label_buf, "P{} Trig Rainbow", p + 1).ok();
+                write!(value_buf, "{}", RAINBOW_NAMES[cur as usize]).ok();
+            }
+            FieldDescriptor::PlayerTrigFdIn(p) => {
+                write!(label_buf, "P{} Fade In", p + 1).ok();
+                write!(value_buf, "{} ms", cur).ok();
+            }
+            FieldDescriptor::PlayerTrigFdOut(p) => {
+                write!(label_buf, "P{} Fade Out", p + 1).ok();
+                write!(value_buf, "{} ms", cur).ok();
+            }
+            FieldDescriptor::PlayerTrigSize(p) => {
+                write!(label_buf, "P{} Trig Size", p + 1).ok();
+                write!(value_buf, "{} px", cur).ok();
+            }
+            FieldDescriptor::PlayerTrigDir(p) => {
+                write!(label_buf, "P{} Trig Dir", p + 1).ok();
+                write!(value_buf, "{}", DIR_NAMES[cur as usize]).ok();
+            }
+            FieldDescriptor::PlayerTrigOffset(p) => {
+                write!(label_buf, "P{} Trig Off", p + 1).ok();
+                write!(value_buf, "{}", OFFSET_NAMES[cur as usize]).ok();
+            }
+            FieldDescriptor::PlayerTrigDur(p) => {
+                write!(label_buf, "P{} Trig Cycle", p + 1).ok();
+                write!(value_buf, "{} s", cur).ok();
+            }
+            FieldDescriptor::PlayerBrightness(p) => {
+                write!(label_buf, "P{} Brightness", p + 1).ok();
+                write!(value_buf, "{}", cur).ok();
+            }
+        }
+        false
+    });
 }
