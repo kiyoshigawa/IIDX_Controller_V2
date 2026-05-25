@@ -22,7 +22,7 @@ This is a rust program designed for the [Waveshare Core 2350B](https://www.waves
 
 - [x] Must Enumerate as an NKRO Keyboard via USB
 - [ ] Will accept Line-In Audio Signal for DSP Audio
-- [ ] Uses new rust lighting controller library
+- [x] Uses new rust lighting controller library
 - [x] New PCB to accept all existing controller wiring
 	- [x] Buttons w/ Responsive Lighting
 	- [x] Both Encoders
@@ -30,12 +30,12 @@ This is a rust program designed for the [Waveshare Core 2350B](https://www.waves
 	- [x] Lighting Configuration Mode Button
 	- [x] JTAG spring pin header for programming/debug
 - [x] Add additional system control buttons with an OLED screen display to center panel
-	- [ ] Adjustable settings for gameplay in addition to lighting controller control
+	- [x] Adjustable settings for gameplay in addition to lighting controller control
 		- [x] Change encoder step thresholds ~~live~~ and save locally
 		- [x] debounce time adjustments
 		- [x] keybindings for all buttons
-		- [ ] Lighting controller config
-		- [ ] Audio DSP adjustments
+		- [x] Lighting controller config
+	- [ ] Audio DSP adjustments in menus?
 
 ## Software:
 
@@ -62,7 +62,7 @@ This is a rust program designed for the [Waveshare Core 2350B](https://www.waves
 		- [x] encoder logic to decide when to send and release keypresses based on count changes
 	- [ ] Second Core (lower priority cosmetic only features)
 		- [x] System Control menu handling / screen updates
-		- [ ] Lighting Controller Updates
+		- [x] Lighting Controller Updates
 		- [ ] Audio DSP and FFT analysis
 		- [x] Data through sio.fifo register from first core:
   		- [x] Button states, current and previous
@@ -87,13 +87,14 @@ This is a rust program designed for the [Waveshare Core 2350B](https://www.waves
 	- [x] Need to figure out how to send keyboard signals based on encoder position changes using the NKRO USB HID library
   	- [x] SIO FIFO messages work mostly, but I am getting some rogue 0s displayed. Need to investigate.
   - [x] add idle timeout to reset to 0 rotation if unused for a while. Like > 1hr
-- [ ] Lighting Controller [Github repo](https://github.com/kiyoshigawa/lighting_controller)
-  - [ ] WS2812 led strip controller:
-  	- [ ] https://github.com/rp-rs/ws2812-pio-rs ? Needs testing
-  - [ ] Configure existing lighting modes that will actually be used to be accessible in control menus
-    - [ ] slow rotate rainbow
-    - [ ] fixed rotate rainbow tied to encoder position
-    - [ ] button-trigger-fired events over any background, configurable
+- [x] Lighting Controller [Github repo](https://github.com/kiyoshigawa/lighting_controller)
+  - [x] WS2812 led strip controller:
+  	- [x] https://github.com/rp-rs/ws2812-pio-rs ? Needs testing
+      - Made my own modified version based on this library, also used DSP for non-blocking sends.
+  - [x] Configure existing lighting modes that will actually be used to be accessible in control menus
+    - [x] slow rotate rainbow
+    - [x] fixed rotate rainbow tied to encoder position
+    - [x] button-trigger-fired events over any background, configurable
   - [ ] New lighting mode for VU-Meter
 		- [ ] Starts at base, and pulses up around the wikis depending on DSP input levels
 		- [ ] Rainbow decides colors for volume levels
@@ -109,9 +110,10 @@ This is a rust program designed for the [Waveshare Core 2350B](https://www.waves
 		- [x] Add dedicated control buttons and screen indicator
 			- [x] https://docs.rs/ssd1306/latest/ssd1306/index.html <- tested and working
 		- [x] will require redoing the center panel on the case to incorporate the new parts/buttons
-		- [ ] Needs feature partiwy with old config functions:
-  		- [ ] Change rainbows
-      - [ ] Change lighting modes
+		- [x] Needs feature partiy with old config functions:
+  		- [x] Change rainbows
+      - [x] Change lighting modes
+      - [x] New has all lighting paramaters full exposed and editable
     - [x] New planned features:
       - [x] debug input display
         - [x] shows what buttons are being pressed live
@@ -127,6 +129,7 @@ This is a rust program designed for the [Waveshare Core 2350B](https://www.waves
         - [x] lighting mode durations
       - [x] Needs a working menu system allowing access to the features above.
       - [ ] idle animations to show on oled when not in menus
+      - [ ] Add 'save slots' and preset lighting patterns to make it easier to cycle through changes
 	- [ ] ~~Old method (was originally the MVP, Skipped straight to feature creep, lol)~~:
 		- [ ] ~~Single button switches to control mode~~
   	- [ ] ~~The gameplay buttons then change things when pressed~~
