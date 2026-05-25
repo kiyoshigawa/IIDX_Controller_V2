@@ -465,9 +465,9 @@ impl FieldDescriptor {
             }
             Self::PlayerBrightness(p) => {
                 if *p == 0 {
-                    "P1 Brightness"
+                    "P1 Bright"
                 } else {
-                    "P2 Brightness"
+                    "P2 Bright"
                 }
             }
             Self::PlayerBgRainbow(p) => {
@@ -1115,6 +1115,46 @@ fn option_line_indices(total: usize, cursor: usize) -> [(usize, Option<usize>); 
     }
 }
 
+/// Generate lighting submenus for a zone (BG, FG, or Trig).
+/// Produces three `static MenuLevel`s: one for All (writes to both players),
+/// one for P1, one for P2.
+macro_rules! lighting_submenu_zone {
+    ($all_name:ident, $p1_name:ident, $p2_name:ident,
+     $title:expr,
+     [$([$label:expr, $all_vk:ident, $player_vk:ident]),+ $(,)?]) => {
+        static $all_name: MenuLevel = MenuLevel {
+            title: $title,
+            options: &[
+                $(MenuOption {
+                    label: $label,
+                    action: MenuAction::EditValue(ValueKey::$all_vk),
+                }),+,
+                MenuOption { label: "Back", action: MenuAction::GoBack },
+            ],
+        };
+        static $p1_name: MenuLevel = MenuLevel {
+            title: concat!("P1 ", $title),
+            options: &[
+                $(MenuOption {
+                    label: $label,
+                    action: MenuAction::EditValue(ValueKey::$player_vk(0)),
+                }),+,
+                MenuOption { label: "Back", action: MenuAction::GoBack },
+            ],
+        };
+        static $p2_name: MenuLevel = MenuLevel {
+            title: concat!("P2 ", $title),
+            options: &[
+                $(MenuOption {
+                    label: $label,
+                    action: MenuAction::EditValue(ValueKey::$player_vk(1)),
+                }),+,
+                MenuOption { label: "Back", action: MenuAction::GoBack },
+            ],
+        };
+    };
+}
+
 static ROOT_MENU: MenuLevel = MenuLevel {
     title: "IIDX Menu",
     options: &[
@@ -1313,314 +1353,50 @@ static P2_MENU: MenuLevel = MenuLevel {
     ],
 };
 
-// BG submenus for All, P1, P2
-static BG_ALL_MENU: MenuLevel = MenuLevel {
-    title: "BG",
-    options: &[
-        MenuOption {
-            label: "Mode",
-            action: MenuAction::EditValue(ValueKey::AllBgMode),
-        },
-        MenuOption {
-            label: "Rainb",
-            action: MenuAction::EditValue(ValueKey::AllBgRainbow),
-        },
-        MenuOption {
-            label: "Spd",
-            action: MenuAction::EditValue(ValueKey::AllBgSpd),
-        },
-        MenuOption {
-            label: "Subd",
-            action: MenuAction::EditValue(ValueKey::AllBgSubdiv),
-        },
-        MenuOption {
-            label: "Back",
-            action: MenuAction::GoBack,
-        },
-    ],
-};
+lighting_submenu_zone!(
+    BG_ALL_MENU,
+    BG_P1_MENU,
+    BG_P2_MENU,
+    "BG",
+    [
+        ["Mode", AllBgMode, PlayerBgMode],
+        ["Rainb", AllBgRainbow, PlayerBgRainbow],
+        ["Spd", AllBgSpd, PlayerBgSpd],
+        ["Subd", AllBgSubdiv, PlayerBgSubdiv],
+    ]
+);
 
-static BG_P1_MENU: MenuLevel = MenuLevel {
-    title: "P1 BG",
-    options: &[
-        MenuOption {
-            label: "Mode",
-            action: MenuAction::EditValue(ValueKey::PlayerBgMode(0)),
-        },
-        MenuOption {
-            label: "Rainb",
-            action: MenuAction::EditValue(ValueKey::PlayerBgRainbow(0)),
-        },
-        MenuOption {
-            label: "Spd",
-            action: MenuAction::EditValue(ValueKey::PlayerBgSpd(0)),
-        },
-        MenuOption {
-            label: "Subd",
-            action: MenuAction::EditValue(ValueKey::PlayerBgSubdiv(0)),
-        },
-        MenuOption {
-            label: "Back",
-            action: MenuAction::GoBack,
-        },
-    ],
-};
+lighting_submenu_zone!(
+    FG_ALL_MENU,
+    FG_P1_MENU,
+    FG_P2_MENU,
+    "FG",
+    [
+        ["Mode", AllFgMode, PlayerFgMode],
+        ["Rainb", AllFgRainbow, PlayerFgRainbow],
+        ["Spd", AllFgSpd, PlayerFgSpd],
+        ["Subd", AllFgSubdiv, PlayerFgSubdiv],
+        ["Step", AllFgStep, PlayerFgStep],
+        ["Size", AllFgSize, PlayerFgSize],
+    ]
+);
 
-static BG_P2_MENU: MenuLevel = MenuLevel {
-    title: "P2 BG",
-    options: &[
-        MenuOption {
-            label: "Mode",
-            action: MenuAction::EditValue(ValueKey::PlayerBgMode(1)),
-        },
-        MenuOption {
-            label: "Rainb",
-            action: MenuAction::EditValue(ValueKey::PlayerBgRainbow(1)),
-        },
-        MenuOption {
-            label: "Spd",
-            action: MenuAction::EditValue(ValueKey::PlayerBgSpd(1)),
-        },
-        MenuOption {
-            label: "Subd",
-            action: MenuAction::EditValue(ValueKey::PlayerBgSubdiv(1)),
-        },
-        MenuOption {
-            label: "Back",
-            action: MenuAction::GoBack,
-        },
-    ],
-};
-
-// FG submenus for All, P1, P2
-static FG_ALL_MENU: MenuLevel = MenuLevel {
-    title: "FG",
-    options: &[
-        MenuOption {
-            label: "Mode",
-            action: MenuAction::EditValue(ValueKey::AllFgMode),
-        },
-        MenuOption {
-            label: "Rainb",
-            action: MenuAction::EditValue(ValueKey::AllFgRainbow),
-        },
-        MenuOption {
-            label: "Spd",
-            action: MenuAction::EditValue(ValueKey::AllFgSpd),
-        },
-        MenuOption {
-            label: "Subd",
-            action: MenuAction::EditValue(ValueKey::AllFgSubdiv),
-        },
-        MenuOption {
-            label: "Step",
-            action: MenuAction::EditValue(ValueKey::AllFgStep),
-        },
-        MenuOption {
-            label: "Size",
-            action: MenuAction::EditValue(ValueKey::AllFgSize),
-        },
-        MenuOption {
-            label: "Back",
-            action: MenuAction::GoBack,
-        },
-    ],
-};
-
-static FG_P1_MENU: MenuLevel = MenuLevel {
-    title: "P1 FG",
-    options: &[
-        MenuOption {
-            label: "Mode",
-            action: MenuAction::EditValue(ValueKey::PlayerFgMode(0)),
-        },
-        MenuOption {
-            label: "Rainb",
-            action: MenuAction::EditValue(ValueKey::PlayerFgRainbow(0)),
-        },
-        MenuOption {
-            label: "Spd",
-            action: MenuAction::EditValue(ValueKey::PlayerFgSpd(0)),
-        },
-        MenuOption {
-            label: "Subd",
-            action: MenuAction::EditValue(ValueKey::PlayerFgSubdiv(0)),
-        },
-        MenuOption {
-            label: "Step",
-            action: MenuAction::EditValue(ValueKey::PlayerFgStep(0)),
-        },
-        MenuOption {
-            label: "Size",
-            action: MenuAction::EditValue(ValueKey::PlayerFgSize(0)),
-        },
-        MenuOption {
-            label: "Back",
-            action: MenuAction::GoBack,
-        },
-    ],
-};
-
-static FG_P2_MENU: MenuLevel = MenuLevel {
-    title: "P2 FG",
-    options: &[
-        MenuOption {
-            label: "Mode",
-            action: MenuAction::EditValue(ValueKey::PlayerFgMode(1)),
-        },
-        MenuOption {
-            label: "Rainb",
-            action: MenuAction::EditValue(ValueKey::PlayerFgRainbow(1)),
-        },
-        MenuOption {
-            label: "Spd",
-            action: MenuAction::EditValue(ValueKey::PlayerFgSpd(1)),
-        },
-        MenuOption {
-            label: "Subd",
-            action: MenuAction::EditValue(ValueKey::PlayerFgSubdiv(1)),
-        },
-        MenuOption {
-            label: "Step",
-            action: MenuAction::EditValue(ValueKey::PlayerFgStep(1)),
-        },
-        MenuOption {
-            label: "Size",
-            action: MenuAction::EditValue(ValueKey::PlayerFgSize(1)),
-        },
-        MenuOption {
-            label: "Back",
-            action: MenuAction::GoBack,
-        },
-    ],
-};
-
-// Trig submenus for All, P1, P2
-static TRIG_ALL_MENU: MenuLevel = MenuLevel {
-    title: "Trig",
-    options: &[
-        MenuOption {
-            label: "Mode",
-            action: MenuAction::EditValue(ValueKey::AllTrigMode),
-        },
-        MenuOption {
-            label: "Rainb",
-            action: MenuAction::EditValue(ValueKey::AllTrigRainbow),
-        },
-        MenuOption {
-            label: "Dir",
-            action: MenuAction::EditValue(ValueKey::AllTrigDir),
-        },
-        MenuOption {
-            label: "Offset",
-            action: MenuAction::EditValue(ValueKey::AllTrigOffset),
-        },
-        MenuOption {
-            label: "Cycle",
-            action: MenuAction::EditValue(ValueKey::AllTrigDur),
-        },
-        MenuOption {
-            label: "FdIn",
-            action: MenuAction::EditValue(ValueKey::AllTrigFdIn),
-        },
-        MenuOption {
-            label: "FdOut",
-            action: MenuAction::EditValue(ValueKey::AllTrigFdOut),
-        },
-        MenuOption {
-            label: "Size",
-            action: MenuAction::EditValue(ValueKey::AllTrigSize),
-        },
-        MenuOption {
-            label: "Back",
-            action: MenuAction::GoBack,
-        },
-    ],
-};
-
-static TRIG_P1_MENU: MenuLevel = MenuLevel {
-    title: "P1 Trig",
-    options: &[
-        MenuOption {
-            label: "Mode",
-            action: MenuAction::EditValue(ValueKey::PlayerTrigMode(0)),
-        },
-        MenuOption {
-            label: "Rainb",
-            action: MenuAction::EditValue(ValueKey::PlayerTrigRainbow(0)),
-        },
-        MenuOption {
-            label: "Dir",
-            action: MenuAction::EditValue(ValueKey::PlayerTrigDir(0)),
-        },
-        MenuOption {
-            label: "Offset",
-            action: MenuAction::EditValue(ValueKey::PlayerTrigOffset(0)),
-        },
-        MenuOption {
-            label: "Cycle",
-            action: MenuAction::EditValue(ValueKey::PlayerTrigDur(0)),
-        },
-        MenuOption {
-            label: "FdIn",
-            action: MenuAction::EditValue(ValueKey::PlayerTrigFdIn(0)),
-        },
-        MenuOption {
-            label: "FdOut",
-            action: MenuAction::EditValue(ValueKey::PlayerTrigFdOut(0)),
-        },
-        MenuOption {
-            label: "Size",
-            action: MenuAction::EditValue(ValueKey::PlayerTrigSize(0)),
-        },
-        MenuOption {
-            label: "Back",
-            action: MenuAction::GoBack,
-        },
-    ],
-};
-
-static TRIG_P2_MENU: MenuLevel = MenuLevel {
-    title: "P2 Trig",
-    options: &[
-        MenuOption {
-            label: "Mode",
-            action: MenuAction::EditValue(ValueKey::PlayerTrigMode(1)),
-        },
-        MenuOption {
-            label: "Rainb",
-            action: MenuAction::EditValue(ValueKey::PlayerTrigRainbow(1)),
-        },
-        MenuOption {
-            label: "Dir",
-            action: MenuAction::EditValue(ValueKey::PlayerTrigDir(1)),
-        },
-        MenuOption {
-            label: "Offset",
-            action: MenuAction::EditValue(ValueKey::PlayerTrigOffset(1)),
-        },
-        MenuOption {
-            label: "Cycle",
-            action: MenuAction::EditValue(ValueKey::PlayerTrigDur(1)),
-        },
-        MenuOption {
-            label: "FdIn",
-            action: MenuAction::EditValue(ValueKey::PlayerTrigFdIn(1)),
-        },
-        MenuOption {
-            label: "FdOut",
-            action: MenuAction::EditValue(ValueKey::PlayerTrigFdOut(1)),
-        },
-        MenuOption {
-            label: "Size",
-            action: MenuAction::EditValue(ValueKey::PlayerTrigSize(1)),
-        },
-        MenuOption {
-            label: "Back",
-            action: MenuAction::GoBack,
-        },
-    ],
-};
+lighting_submenu_zone!(
+    TRIG_ALL_MENU,
+    TRIG_P1_MENU,
+    TRIG_P2_MENU,
+    "Trig",
+    [
+        ["Mode", AllTrigMode, PlayerTrigMode],
+        ["Rainb", AllTrigRainbow, PlayerTrigRainbow],
+        ["Dir", AllTrigDir, PlayerTrigDir],
+        ["Offset", AllTrigOffset, PlayerTrigOffset],
+        ["Cycle", AllTrigDur, PlayerTrigDur],
+        ["FdIn", AllTrigFdIn, PlayerTrigFdIn],
+        ["FdOut", AllTrigFdOut, PlayerTrigFdOut],
+        ["Size", AllTrigSize, PlayerTrigSize],
+    ]
+);
 
 static GLOBAL_MENU: MenuLevel = MenuLevel {
     title: "Global",
@@ -3619,11 +3395,11 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 }
                 FieldDescriptor::PlayerTrigFdIn(p) => {
                     let name = if p == 0 { "P1FdI" } else { "P2FdI" };
-                    write!(buf, "{}: {} ms", name, cur).ok();
+                    write!(buf, "{}:{}ms", name, cur).ok();
                 }
                 FieldDescriptor::PlayerTrigFdOut(p) => {
                     let name = if p == 0 { "P1FdO" } else { "P2FdO" };
-                    write!(buf, "{}: {} ms", name, cur).ok();
+                    write!(buf, "{}:{}ms", name, cur).ok();
                 }
                 FieldDescriptor::PlayerTrigSize(p) => {
                     let name = if p == 0 { "P1TrSz" } else { "P2TrSz" };
@@ -3635,7 +3411,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 }
                 FieldDescriptor::PlayerTrigOffset(p) => {
                     let name = if p == 0 { "P1TrOf" } else { "P2TrOf" };
-                    write!(buf, "{}: {}", name, OFFSET_NAMES[cur as usize]).ok();
+                    write!(buf, "{}:{}", name, OFFSET_NAMES[cur as usize]).ok();
                 }
                 FieldDescriptor::PlayerTrigDur(p) => {
                     let name = if p == 0 { "P1TrDu" } else { "P2TrDu" };
