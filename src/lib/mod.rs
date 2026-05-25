@@ -12,6 +12,7 @@ use usbd_human_interface_device::page::Keyboard;
 
 pub mod flash_storage;
 pub mod input_handler;
+pub mod led_strip;
 pub mod menu_handler;
 
 pub use flash_storage::FLASH_STORAGE_BASE_ADDR;

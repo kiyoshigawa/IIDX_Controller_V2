@@ -25,6 +25,7 @@ use panic_probe as _;
 use rp235x_hal::{
     self as hal, Clock,
     clocks::init_clocks_and_plls,
+    dma::DMAExt,
     entry,
     multicore::{Multicore, Stack},
     pac,
@@ -39,8 +40,11 @@ use usbd_human_interface_device::{page::Keyboard, prelude::*};
 use iidx_controller_v2::flash_storage::write_storage;
 use iidx_controller_v2::flash_storage::*;
 use iidx_controller_v2::input_handler::InputHandler;
+use iidx_controller_v2::led_strip::{DmaLedStrip, NUM_LEDS, setup_ws2812_pio};
 use iidx_controller_v2::menu_handler::MenuHandler;
 use iidx_controller_v2::*;
+use rp235x_hal::gpio::FunctionPio1;
+use smart_leds::RGB8;
 
 // ── Startup / binary-exclusive statics ──────────────────────────────────────
 
@@ -300,8 +304,9 @@ fn main() -> ! {
         button.pin.set_input_enable(false);
     }
 
-    // LED strip control pin
-    let _led_strip_data_pin = pins.gpio27.into_pull_down_disabled();
+    // LED strip control pin — PIO1 side-set drives this.
+    let led_strip_pin = pins.gpio27.into_function::<FunctionPio1>();
+    let led_strip_pin_id = led_strip_pin.id().num;
 
     // encoder pins:
     let p1_encoder_pin_a = pins.gpio28.into_pull_up_input();
@@ -468,14 +473,17 @@ fn main() -> ! {
         .into_buffered_graphics_mode();
     display.init().unwrap();
 
-    // Set up WS2812 LED PIO:
-    // let (mut leds_pio, leds_sm0, _, _, _) = pac.PIO1.split(&mut pac.RESETS);
-    // let mut led_strip = Ws2812Direct::new(
-    //     led_strip_data_pin,
-    //     &mut leds_pio,
-    //     leds_sm0,
-    //     EXTERNAL_XTAL_FREQ,
-    // );
+    // Set up WS2812 LED PIO + DMA:
+    let (mut leds_pio, leds_sm0, _, _, _) = pac.PIO1.split(&mut pac.RESETS);
+    let tx = setup_ws2812_pio(
+        led_strip_pin_id,
+        &mut leds_pio,
+        leds_sm0,
+        clocks.system_clock.freq(),
+    );
+    let dma_channels = pac.DMA.split(&mut pac.RESETS);
+    let dma_ch0 = dma_channels.ch0;
+    let mut led_strip = DmaLedStrip::new(dma_ch0, tx);
 
     //Start second core (core1) and begin its program loop:
     core1
@@ -498,6 +506,7 @@ fn main() -> ! {
             let mut last_core1_heartbeat_tick = 0_u64;
             let mut last_screen_update_ticks = 0_u64;
             let mut last_led_update_ticks = 0_u64;
+            let mut frame_count: u32 = 0;
 
             // core1 loop:
             loop {
@@ -539,7 +548,24 @@ fn main() -> ! {
                 // core1 led strip update:
                 if timer.get_counter().ticks() > (last_led_update_ticks + LED_FRAME_TICKS) {
                     last_led_update_ticks = timer.get_counter().ticks();
-                    // led_strip.write([color].iter().copied()).unwrap();
+                    // Rotating rainbow sweep — each frame shifts the hue.
+                    let mut frame = [RGB8::new(0, 0, 0); NUM_LEDS];
+                    for (i, led) in frame.iter_mut().enumerate() {
+                        let hue = (frame_count as usize + i * 4) as u8;
+                        let region = hue / 43;
+                        let rem = (u16::from(hue) - u16::from(region * 43)) * 6;
+                        let rem = rem as u8;
+                        *led = match region {
+                            0 => RGB8::new(255, rem, 0),
+                            1 => RGB8::new(255 - rem, 255, 0),
+                            2 => RGB8::new(0, 255, rem),
+                            3 => RGB8::new(0, 255 - rem, 255),
+                            4 => RGB8::new(rem, 0, 255),
+                            _ => RGB8::new(255, 0, 255 - rem),
+                        };
+                    }
+                    led_strip.write_frame(&frame, timer.get_counter().ticks());
+                    frame_count = frame_count.wrapping_add(1);
                 }
 
                 // core1 LCD screen updates:
