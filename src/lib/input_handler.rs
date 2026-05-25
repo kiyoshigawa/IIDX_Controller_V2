@@ -4,6 +4,7 @@
 //! button/encoder state from core0 via SIO FIFO, detects changes, and
 //! forwards events to [`MenuHandler`](crate::menu_handler::MenuHandler).
 
+use crate::lighting_handler::{LightingEvent, LightingHandler};
 use crate::menu_handler::{MenuEvents, MenuHandler};
 use crate::{ButtonCode, EncoderDirection};
 use defmt::debug;
@@ -69,6 +70,9 @@ pub struct InputHandler<'a, D> {
     last_cc_press_tick: u64,
     /// Whether the idle event has already been sent for the current idle period.
     idle_event_sent: bool,
+    /// Previous encoder counts for change detection.
+    last_encoder_p1_count: i32,
+    last_encoder_p2_count: i32,
 }
 
 impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
@@ -85,6 +89,8 @@ impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
             hold_states: [ButtonHoldState::default(); 36],
             last_cc_press_tick: 0,
             idle_event_sent: false,
+            last_encoder_p1_count: 0_i32,
+            last_encoder_p2_count: 0_i32,
         }
     }
 
@@ -204,6 +210,46 @@ impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
         {
             self.idle_event_sent = true;
             self.menu_handler.process_event(MenuEvents::Idle);
+        }
+    }
+
+    /// Check encoder counts for changes and forward events to the lighting handler.
+    /// Called from the core1 loop after `detect_input_changes()`.
+    pub fn process_encoder_events(&mut self, lighting_handler: &mut LightingHandler) {
+        if self.encoder_p1_count != self.last_encoder_p1_count {
+            self.last_encoder_p1_count = self.encoder_p1_count;
+            lighting_handler.handle_event(LightingEvent::EncoderMoved {
+                player: 0,
+                count: self.encoder_p1_count,
+            });
+        }
+        if self.encoder_p2_count != self.last_encoder_p2_count {
+            self.last_encoder_p2_count = self.encoder_p2_count;
+            lighting_handler.handle_event(LightingEvent::EncoderMoved {
+                player: 1,
+                count: self.encoder_p2_count,
+            });
+        }
+    }
+
+    /// Check gameplay and encoder-logical buttons for rising edges and forward
+    /// [`LightingEvent::ButtonPressed`] to the lighting handler.
+    pub fn process_button_events(&mut self, lighting_handler: &mut LightingHandler) {
+        let current = self.current_combined_button_state;
+        let previous = self.previous_combined_button_state;
+
+        // P1 gameplay (codes 0..=6) + encoder logicals (32..=33)
+        for offset in [0, 1, 2, 3, 4, 5, 6, 32, 33] {
+            if ((current >> offset) & 1 == 1) && ((previous >> offset) & 1 == 0) {
+                lighting_handler.handle_event(LightingEvent::ButtonPressed { player: 0 });
+            }
+        }
+
+        // P2 gameplay (codes 9..=15) + encoder logicals (34..=35)
+        for offset in [9, 10, 11, 12, 13, 14, 15, 34, 35] {
+            if ((current >> offset) & 1 == 1) && ((previous >> offset) & 1 == 0) {
+                lighting_handler.handle_event(LightingEvent::ButtonPressed { player: 1 });
+            }
         }
     }
 }

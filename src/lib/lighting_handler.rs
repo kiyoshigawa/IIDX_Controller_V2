@@ -1,15 +1,20 @@
 //! Lighting-handling module.
 //!
-//! Provides [`LightingHandler`] — the core1-level manager for the LED strip
-//! colour buffer, gamma correction, and brightness scaling.
+//! Provides [`LightingHandler`] — the core1-level manager that owns both
+//! per-player [`Animation`]s, the shared colour buffer, the gamma/brightness
+//! pipeline, and event handling.
 //!
-//! The actual [`lighting_controller::LightingController`] and its
-//! [`Animation`]s live in `main.rs` (owned as local variables in the core1
-//! closure).  This module owns the colour buffer and the gamma/brightness
-//! pipeline, and will grow to own the animations and controller in
-//! Phase 2 (per-player split) and handle [`LightingEvent`]s in Phase 3+.
+//! # Layout
+//!
+//! The 58-LED physical strip is split into two logical halves of 29 LEDs each.
+//! Player 1 occupies indices 0–28, Player 2 occupies 29–57.  Each half is
+//! driven by an independent [`Animation`] with its own background, foreground,
+//! and trigger state.
 
-use crate::led_strip::NUM_LEDS;
+use crate::led_strip::{LEDS_PER_SIDE, NUM_LEDS};
+use embedded_time::rate::Hertz;
+use lighting_controller::animations::Animatable;
+use lighting_controller::{self as lc, animations, utility};
 use rgb::RGB8;
 use smart_leds::colors::BLACK;
 
@@ -18,10 +23,7 @@ use smart_leds::colors::BLACK;
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Gamma-correction lookup table (standard 2.2 gamma, stored in flash).
-///
-/// Maps an 8-bit linear channel value to its gamma-corrected 8-bit output.
-/// This is the same table used in the original Arduino/Teensy controller code.
-static GAMMA_TABLE: [u8; 256] = [
+const GAMMA_TABLE: [u8; 256] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1,
     1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 5, 5, 5,
     5, 6, 6, 6, 6, 7, 7, 7, 7, 8, 8, 8, 9, 9, 9, 10, 10, 10, 11, 11, 11, 12, 12, 13, 13, 13, 14,
@@ -35,73 +37,110 @@ static GAMMA_TABLE: [u8; 256] = [
     223, 225, 228, 231, 233, 236, 239, 241, 244, 247, 249, 252, 255,
 ];
 
-/// Default LED brightness level (0–255).  Start moderately — can be adjusted
-/// via menu in Phase 5.
-pub const DEFAULT_BRIGHTNESS: u8 = 255;
+/// Default LED brightness level (0–255).
+pub const DEFAULT_BRIGHTNESS: u8 = 200;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // LightingHandler
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Owns the LED strip colour buffer and handles gamma/brightness correction.
-///
-/// **Phase 1:** Just the buffer and pipeline — the animation and
-/// [`lighting_controller::LightingController`] live in `main.rs`.
-///
-/// **Phase 2+:** Will own the per-player [`Animation`]s and the
-/// [`LightingController`], handle [`LightingEvent`]s, and expose settings
-/// for the menu system.
+/// Owns the LED strip colour buffer, both per-player animations, and the
+/// gamma/brightness pipeline.
 pub struct LightingHandler {
     /// The frame buffer written to the WS2812 strip each cycle.
     pub color_buffer: [RGB8; NUM_LEDS],
+
+    /// Player 1 animation (LEDs 0–28).
+    a1: animations::Animation<'static, LEDS_PER_SIDE>,
+
+    /// Player 2 animation (LEDs 29–57).
+    a2: animations::Animation<'static, LEDS_PER_SIDE>,
+
     /// Current brightness level (0–255).
     brightness: u8,
+
+    /// Frame rate used for duration → frame-count conversions.
+    frame_rate: Hertz,
 }
 
 impl LightingHandler {
-    /// Create a new `LightingHandler` with all LEDs off at default brightness.
-    pub fn new() -> Self {
+    /// Create a new handler with two per-player animations, both initialised
+    /// with the given rainbow and frame rate.
+    pub fn new(frame_rate: Hertz, rainbow: &'static [RGB8]) -> Self {
+        let a1 = animations::Animation::<LEDS_PER_SIDE>::new(
+            lc::default_animations::ANI_DEFAULT,
+            frame_rate,
+        )
+        .set_translation_array(utility::default_translation_array::<LEDS_PER_SIDE>(0))
+        .set_bg_rainbow(rainbow, animations::RainbowDir::Forward)
+        .set_bg_subdivisions(2)
+        .set_trig_incremental_rainbow(lc::colors::R_BLACK, animations::RainbowDir::Forward)
+        .set_trig_fade_rainbow(lc::colors::R_BLACK, animations::RainbowDir::Forward);
+
+        let mut a2 = animations::Animation::<LEDS_PER_SIDE>::new(
+            lc::default_animations::ANI_DEFAULT,
+            frame_rate,
+        )
+        .set_translation_array(utility::default_translation_array::<LEDS_PER_SIDE>(
+            LEDS_PER_SIDE,
+        ))
+        .set_bg_rainbow(rainbow, animations::RainbowDir::Forward)
+        .set_bg_subdivisions(2)
+        .set_bg_direction(animations::Direction::Negative);
+
+        a2.set_offset(
+            animations::AnimationType::Background,
+            animations::MAX_OFFSET / 2,
+        );
+        a2.update_trig_incremental_rainbow(lc::colors::R_BLACK, animations::RainbowDir::Forward);
+        a2.update_trig_fade_rainbow(lc::colors::R_BLACK, animations::RainbowDir::Forward);
+
         Self {
             color_buffer: [BLACK; NUM_LEDS],
+            a1,
+            a2,
             brightness: DEFAULT_BRIGHTNESS,
+            frame_rate,
         }
     }
 
-    /// Create a new `LightingHandler` with a custom brightness level.
-    pub fn with_brightness(brightness: u8) -> Self {
-        Self {
-            color_buffer: [BLACK; NUM_LEDS],
-            brightness,
+    /// Drive both animations forward one frame and copy their segment data
+    /// into the shared colour buffer.
+    pub fn update(&mut self) {
+        self.a1.update();
+        self.a2.update();
+
+        let seg1 = self.a1.segment();
+        let trans1 = self.a1.translation_array();
+        for (&i, &c) in trans1.iter().zip(seg1.iter()) {
+            self.color_buffer[i] = c;
+        }
+
+        let seg2 = self.a2.segment();
+        let trans2 = self.a2.translation_array();
+        for (&i, &c) in trans2.iter().zip(seg2.iter()) {
+            self.color_buffer[i] = c;
         }
     }
 
     /// Apply gamma correction and brightness scaling **in-place** on the
     /// colour buffer.
-    ///
-    /// Must be called before [`write_frame`] because the DMA driver accepts
-    /// a `&[RGB8]` slice, not an iterator — we cannot chain gamma/brightness
-    /// iterator adaptors at the write site.
     pub fn apply_gamma_brightness(&mut self) {
         let scale = self.brightness as u16;
 
         for led in self.color_buffer.iter_mut() {
-            // Gamma correction via lookup table
             led.r = GAMMA_TABLE[led.r as usize];
             led.g = GAMMA_TABLE[led.g as usize];
             led.b = GAMMA_TABLE[led.b as usize];
-
-            // Brightness scaling with rounding
             led.r = ((led.r as u16 * scale + 127) / 255) as u8;
             led.g = ((led.g as u16 * scale + 127) / 255) as u8;
             led.b = ((led.b as u16 * scale + 127) / 255) as u8;
         }
     }
 
-    /// Convenience: gamma-correct, then immediately write to the LED strip.
-    ///
-    /// Equivalent to calling [`apply_gamma_brightness`] then
-    /// [`DmaLedStrip::write_frame`].
-    pub fn write_gamma_corrected<CH, SM>(
+    /// Convenience: update animations, gamma-correct, and write to the strip
+    /// in one call.
+    pub fn update_and_write<CH, SM>(
         &mut self,
         strip: &mut crate::led_strip::DmaLedStrip<CH, SM>,
         now: u64,
@@ -109,22 +148,68 @@ impl LightingHandler {
         CH: rp235x_hal::dma::SingleChannel,
         SM: rp235x_hal::pio::ValidStateMachine,
     {
+        self.update();
         self.apply_gamma_brightness();
         strip.write_frame(&self.color_buffer, now);
+    }
+
+    /// The frame rate used internally for animation timing.
+    pub fn frame_rate(&self) -> Hertz {
+        self.frame_rate
+    }
+
+    /// Set the global brightness (0–255).
+    pub fn set_brightness(&mut self, brightness: u8) {
+        self.brightness = brightness;
+    }
+
+    /// Process a [`LightingEvent`] — called from the core1 loop when SIO FIFO
+    /// data indicates an encoder position change or button press.
+    pub fn handle_event(&mut self, event: LightingEvent) {
+        match event {
+            LightingEvent::EncoderMoved { player, count } => {
+                const STEPS_PER_REV: i32 = 2400;
+                let normalized = count.rem_euclid(STEPS_PER_REV);
+                let offset =
+                    ((normalized as u32 * (u16::MAX as u32)) / (STEPS_PER_REV as u32)) as u16;
+                match player {
+                    0 => self
+                        .a1
+                        .set_offset(animations::AnimationType::Background, offset),
+                    1 => self
+                        .a2
+                        .set_offset(animations::AnimationType::Background, offset),
+                    _ => {}
+                }
+            }
+            LightingEvent::ButtonPressed { player } => {
+                let params = animations::trigger::Parameters {
+                    mode: animations::trigger::Mode::ColorPulse,
+                    direction: animations::Direction::Stopped,
+                    fade_in_time_ns: 250_000_000,
+                    fade_out_time_ns: 500_000_000,
+                    starting_offset: 0,
+                    pixels_per_pixel_group: 3,
+                };
+                match player {
+                    0 => self.a1.trigger(&params, self.frame_rate),
+                    1 => self.a2.trigger(&params, self.frame_rate),
+                    _ => {}
+                }
+            }
+        }
     }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// LightingEvent — placeholder for Phases 3+
+// LightingEvent
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Events emitted by [`InputHandler`](crate::input_handler::InputHandler) for
-/// the lighting system to react to.
-///
-/// Currently unused (Phase 1 just runs a background animation).  Phases 3 and 4
-/// will add `EncoderMoved` and `ButtonPressed` variants respectively.
-#[allow(dead_code)]
+/// Events forwarded to [`LightingHandler`] from the core1 loop in response
+/// to SIO FIFO input data or button press notifications.
 pub enum LightingEvent {
-    /// Placeholder — will grow in later phases.
-    _Placeholder,
+    /// Encoder position changed for the given player (0 = P1, 1 = P2).
+    EncoderMoved { player: usize, count: i32 },
+    /// A gameplay or encoder-derived button was pressed.
+    ButtonPressed { player: usize },
 }

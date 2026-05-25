@@ -66,6 +66,9 @@ const WS2812_BIT_FREQ: HertzU32 = HertzU32::kHz(800);
 /// Number of LEDs in the strip. Change this to match your hardware.
 pub const NUM_LEDS: usize = 58;
 
+/// LEDs per wiki side — half the strip, used as the const generic for per-player animations.
+pub const LEDS_PER_SIDE: usize = NUM_LEDS / 2;
+
 /// Minimum WS2812 RESET gap in timer ticks (1 tick = 1 µs).
 const RESET_TICKS: u64 = 60;
 
