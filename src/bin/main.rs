@@ -41,10 +41,14 @@ use iidx_controller_v2::flash_storage::write_storage;
 use iidx_controller_v2::flash_storage::*;
 use iidx_controller_v2::input_handler::InputHandler;
 use iidx_controller_v2::led_strip::{DmaLedStrip, NUM_LEDS, setup_ws2812_pio};
+use iidx_controller_v2::lighting_consts::TWELVE_BIT_OKLCH_RAINBOW;
+use iidx_controller_v2::lighting_handler::LightingHandler;
 use iidx_controller_v2::menu_handler::MenuHandler;
 use iidx_controller_v2::*;
+use lighting_controller::{
+    self, LightingController, LogicalStrip, animations, default_animations, utility,
+};
 use rp235x_hal::gpio::FunctionPio1;
-use smart_leds::RGB8;
 
 // ── Startup / binary-exclusive statics ──────────────────────────────────────
 
@@ -502,11 +506,21 @@ fn main() -> ! {
             let menu_handler = MenuHandler::new(&mut display, *config);
             let mut input_handler = InputHandler::new(menu_handler);
 
+            // Lighting controller setup — single animation (Phase 1) driving the full 58-LED strip
+            let frame_rate: embedded_time::rate::Hertz = embedded_time::rate::Extensions::Hz(144);
+            let mut a1 =
+                animations::Animation::<NUM_LEDS>::new(default_animations::ANI_DEFAULT, frame_rate)
+                    .set_translation_array(utility::default_translation_array(0))
+                    .set_bg_rainbow(TWELVE_BIT_OKLCH_RAINBOW, animations::RainbowDir::Forward)
+                    .set_bg_subdivisions(2);
+            let animations: [&mut dyn animations::Animatable; 1] = [&mut a1];
+            let mut lc = LightingController::new(animations, frame_rate);
+            let mut lighting_handler = LightingHandler::new();
+
             // core1 loop state variables:
             let mut last_core1_heartbeat_tick = 0_u64;
             let mut last_screen_update_ticks = 0_u64;
             let mut last_led_update_ticks = 0_u64;
-            let mut frame_count: u32 = 0;
 
             // core1 loop:
             loop {
@@ -548,24 +562,12 @@ fn main() -> ! {
                 // core1 led strip update:
                 if timer.get_counter().ticks() > (last_led_update_ticks + LED_FRAME_TICKS) {
                     last_led_update_ticks = timer.get_counter().ticks();
-                    // Rotating rainbow sweep — each frame shifts the hue.
-                    let mut frame = [RGB8::new(0, 0, 0); NUM_LEDS];
-                    for (i, led) in frame.iter_mut().enumerate() {
-                        let hue = (frame_count as usize + i * 4) as u8;
-                        let region = hue / 43;
-                        let rem = (u16::from(hue) - u16::from(region * 43)) * 6;
-                        let rem = rem as u8;
-                        *led = match region {
-                            0 => RGB8::new(255, rem, 0),
-                            1 => RGB8::new(255 - rem, 255, 0),
-                            2 => RGB8::new(0, 255, rem),
-                            3 => RGB8::new(0, 255 - rem, 255),
-                            4 => RGB8::new(rem, 0, 255),
-                            _ => RGB8::new(255, 0, 255 - rem),
-                        };
-                    }
-                    led_strip.write_frame(&frame, timer.get_counter().ticks());
-                    frame_count = frame_count.wrapping_add(1);
+                    // Update the lighting controller and write the frame
+                    let mut ls = LogicalStrip::new(&mut lighting_handler.color_buffer);
+                    lc.update(&mut ls);
+                    drop(ls);
+                    lighting_handler
+                        .write_gamma_corrected(&mut led_strip, timer.get_counter().ticks());
                 }
 
                 // core1 LCD screen updates:

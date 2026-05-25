@@ -21,9 +21,11 @@ defmt-rtt = "1.0.0"
 display-interface = "0.5.0"
 embedded-graphics = "0.8.2"
 embedded-hal = "1.0.0"
+embedded-time = "0.12"
 fugit = "0.3.6"
 heapless = "0.8.0"
 pio = "0.3.0"
+rgb = "0.8"
 smart-leds = "0.4.0"
 ssd1306 = "0.10.0"
 usb-device = "0.3.2"
@@ -47,17 +49,14 @@ version = "0.27"
 default-features = false
 features = ["derive"]
 
-
 [dependencies.usbd-human-interface-device]
 version = "0.6.0"
 features = ["defmt"]
 
-# Use PR #40 commit with rp235x-hal support
-[dependencies.ws2812-pio]
-git = "https://github.com/melastmohican/ws2812-pio-rs"
-rev = "3546fdd28cdae8f8a4364fa92e921f975006c9c7"
-default-features = false
-features = ["rp235x"]
+# Lighting controller library for LED strip animations
+[dependencies.lighting_controller]
+git = "https://github.com/kiyoshigawa/lighting_controller"
+version = "0.2.0"
 
 # cargo build/run
 [profile.dev]
