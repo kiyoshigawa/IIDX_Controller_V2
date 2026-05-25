@@ -114,21 +114,32 @@ pub const TWELVE_BIT_OKLCH_RAINBOW_WEIGHTED: &[RGB8] = &[
 
 /// Display names for rainbow palettes, indexed 1:1 with [`RAINBOW_SLICES`].
 pub const RAINBOW_NAMES: &[&str] = &[
-    "Oklch", "OkWgt", "RYB", "OGP", "RGB", "BY", "RB",
-    "Black", "White", "Red", "Orange", "Yellow", "Lime",
-    "Spring", "Cyan", "DpBlue", "Blue", "BlPurp", "Fuchsia", "DkPurp",
+    "Oklch", "OkWgt", "RYB", "OGP", "RGB", "BY", "RB", "Black", "White", "Red", "Orange", "Yellow",
+    "Lime", "Spring", "Cyan", "DpBlue", "Blue", "BlPurp", "Fuchsia", "DkPurp",
 ];
 
 /// Actual `&[RGB8]` slices indexed 1:1 with [`RAINBOW_NAMES`].
 pub const RAINBOW_SLICES: &[&[RGB8]] = &[
-    TWELVE_BIT_OKLCH_RAINBOW, TWELVE_BIT_OKLCH_RAINBOW_WEIGHTED,
-    lc::colors::R_RYB, lc::colors::R_OGP, lc::colors::R_RGB,
-    lc::colors::R_BY, lc::colors::R_RB,
-    lc::colors::R_BLACK, lc::colors::R_WHITE, lc::colors::R_RED,
-    lc::colors::R_ORANGE, lc::colors::R_YELLOW, lc::colors::R_LIME,
-    lc::colors::R_SPRING_GREEN, lc::colors::R_CYAN,
-    lc::colors::R_DEEP_BLUE, lc::colors::R_BLUE, lc::colors::R_BLUE_PURPLE,
-    lc::colors::R_FUCHSIA, lc::colors::R_DARK_PURPLE,
+    TWELVE_BIT_OKLCH_RAINBOW,
+    TWELVE_BIT_OKLCH_RAINBOW_WEIGHTED,
+    lc::colors::R_RYB,
+    lc::colors::R_OGP,
+    lc::colors::R_RGB,
+    lc::colors::R_BY,
+    lc::colors::R_RB,
+    lc::colors::R_BLACK,
+    lc::colors::R_WHITE,
+    lc::colors::R_RED,
+    lc::colors::R_ORANGE,
+    lc::colors::R_YELLOW,
+    lc::colors::R_LIME,
+    lc::colors::R_SPRING_GREEN,
+    lc::colors::R_CYAN,
+    lc::colors::R_DEEP_BLUE,
+    lc::colors::R_BLUE,
+    lc::colors::R_BLUE_PURPLE,
+    lc::colors::R_FUCHSIA,
+    lc::colors::R_DARK_PURPLE,
 ];
 
 /// Display names for background animation modes.
@@ -139,7 +150,11 @@ pub const FG_MODE_NAMES: &[&str] = &["Off", "Marq", "MrqFix", "MrqFad", "MrqFxF"
 
 /// Display names for trigger animation modes.
 pub const TRIG_MODE_NAMES: &[&str] = &[
-    "Off", "Pulse", "PlsFad", "PlsRnb",
-    "Shot", "ShtFad", "ShtRnb",
-    "Flash", "FlsFad", "FlsRnb",
+    "Off", "Pulse", "PlsFad", "PlsRnb", "Shot", "ShtFad", "ShtRnb", "Flash", "FlsFad", "FlsRnb",
 ];
+
+/// Display names for direction settings.
+pub const DIR_NAMES: &[&str] = &["Fwd", "Stop", "Rev"];
+
+/// Display names for trigger starting offset mode.
+pub const OFFSET_NAMES: &[&str] = &["Random", "Center", "Top"];

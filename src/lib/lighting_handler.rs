@@ -65,6 +65,12 @@ pub struct LightingHandler {
 
     /// Shadow copy of per-player lighting config for on-the-fly trigger param construction.
     player_cfg: [PlayerAnimConfig; 2],
+
+    /// Last-applied config for efficient change detection during live sync.
+    last_applied_cfg: crate::flash_storage::LightingConfig,
+
+    /// Alternates trigger direction on each button press per player.
+    trigger_dir_toggle: [bool; 2],
 }
 
 impl LightingHandler {
@@ -106,11 +112,23 @@ impl LightingHandler {
             brightness: DEFAULT_BRIGHTNESS,
             frame_rate,
             player_cfg: [PlayerAnimConfig {
-                bg_mode: 0, bg_rainbow: 0, bg_subdivisions: 0, bg_speed_ds: 0,
+                bg_mode: 0, bg_rainbow: 0, bg_subdivisions: 0, bg_speed_ds: 0, bg_dir: 0,
                 fg_mode: 0, fg_rainbow: 0, fg_subdivisions: 0, fg_speed_ds: 0,
-                fg_step_ds: 0, fg_px_per_group: 0,
+                fg_step_ds: 0, fg_px_per_group: 0, fg_dir: 0,
                 trig_mode: 0, trig_rainbow: 0, trig_fade_in_ms: 0, trig_fade_out_ms: 0, trig_width: 0,
+                trig_dir: 0, trig_offset: 0, trig_dur_s: 0,
             }; 2],
+            last_applied_cfg: crate::flash_storage::LightingConfig {
+                players: [PlayerAnimConfig {
+                    bg_mode: 0, bg_rainbow: 0, bg_subdivisions: 0, bg_speed_ds: 0, bg_dir: 0,
+                    fg_mode: 0, fg_rainbow: 0, fg_subdivisions: 0, fg_speed_ds: 0,
+                    fg_step_ds: 0, fg_px_per_group: 0, fg_dir: 0,
+                    trig_mode: 0, trig_rainbow: 0, trig_fade_in_ms: 0, trig_fade_out_ms: 0, trig_width: 0,
+                    trig_dir: 0, trig_offset: 0, trig_dur_s: 0,
+                }; 2],
+                brightness: 0,
+            },
+            trigger_dir_toggle: [false; 2],
         }
     }
 
@@ -177,9 +195,19 @@ impl LightingHandler {
     pub fn apply_config(&mut self, cfg: &crate::flash_storage::LightingConfig) {
         self.brightness = cfg.brightness;
         self.player_cfg = cfg.players;
+        self.last_applied_cfg = *cfg;
         for (i, pcfg) in cfg.players.iter().enumerate() {
             self.apply_player_config(i, pcfg);
         }
+    }
+
+    /// Efficiently synchronise the lighting handler with the menu's RAM shadow
+    /// of flash settings.  Only performs work when the config has actually changed.
+    pub fn sync_config(&mut self, cfg: &crate::flash_storage::LightingConfig) {
+        if self.last_applied_cfg == *cfg {
+            return;
+        }
+        self.apply_config(cfg);
     }
 
     fn apply_player_config(&mut self, player: usize, pcfg: &PlayerAnimConfig) {
@@ -189,15 +217,23 @@ impl LightingHandler {
             _ => return,
         };
 
-        // BG mode
+        // BG direction from config (0=Fwd, 1=Stop, 2=Rev), default Positive
+        let bg_dir = match pcfg.bg_dir {
+            1 => animations::Direction::Stopped,
+            2 => animations::Direction::Negative,
+            _ => animations::Direction::Positive,
+        };
+        // FG direction from config
+        let fg_dir = match pcfg.fg_dir {
+            1 => animations::Direction::Stopped,
+            2 => animations::Direction::Negative,
+            _ => animations::Direction::Positive,
+        };
+
         match pcfg.bg_mode {
-            0 => { // Rotate — FillRainbowRotate + Positive direction
+            0 | 1 => { // Rotate or Follow — FillRainbowRotate with config direction
                 anim.update_bg_mode(animations::background::Mode::FillRainbowRotate);
-                anim.update_bg_direction(animations::Direction::Positive);
-            }
-            1 => { // Follow — FillRainbowRotate + Positive direction
-                anim.update_bg_mode(animations::background::Mode::FillRainbowRotate);
-                anim.update_bg_direction(animations::Direction::Positive);
+                anim.update_bg_direction(bg_dir);
             }
             2 => anim.update_bg_mode(animations::background::Mode::Solid),
             3 => anim.update_bg_mode(animations::background::Mode::SolidFade),
@@ -243,6 +279,9 @@ impl LightingHandler {
         anim.update_fg_step_time_ns(step_ns, self.frame_rate);
         anim.update_fg_pixels_per_pixel_group(pcfg.fg_px_per_group as usize);
 
+        // FG direction from config
+        anim.update_fg_direction(fg_dir);
+
         // Trigger rainbows
         let trig_rainbow = crate::lighting_consts::RAINBOW_SLICES
             .get(pcfg.trig_rainbow as usize)
@@ -250,6 +289,10 @@ impl LightingHandler {
             .unwrap_or(crate::lighting_consts::TWELVE_BIT_OKLCH_RAINBOW);
         anim.update_trig_incremental_rainbow(trig_rainbow, animations::RainbowDir::Forward);
         anim.update_trig_fade_rainbow(trig_rainbow, animations::RainbowDir::Forward);
+
+        // Trigger cycle duration
+        let dur_ns = (pcfg.trig_dur_s as u64) * 1_000_000_000;
+        anim.update_trig_duration_ns(dur_ns, self.frame_rate);
     }
 
     /// Process a [`LightingEvent`] — called from the core1 loop when SIO FIFO
@@ -270,8 +313,43 @@ impl LightingHandler {
                     }
                 }
             }
+            LightingEvent::DirectionChanged { player, direction } => {
+                // In Follow mode, reverse rotation to match wiki spin direction.
+                // Stopped is ignored so the animation keeps rotating in the last direction.
+                if self.player_cfg.get(player).map(|c| c.bg_mode) == Some(1) {
+                    let dir = match direction {
+                        crate::EncoderDirection::Positive => animations::Direction::Positive,
+                        crate::EncoderDirection::Negative => animations::Direction::Negative,
+                        crate::EncoderDirection::Stopped => return,
+                    };
+                    match player {
+                        0 => self.a1.update_bg_direction(dir),
+                        1 => self.a2.update_bg_direction(dir),
+                        _ => {}
+                    }
+                }
+            }
             LightingEvent::ButtonPressed { player } => {
                 if let Some(cfg) = self.player_cfg.get(player) {
+                    if cfg.trig_mode == 0 { return; }
+                    // Trigger direction: config sets starting direction, toggles each fire
+                    let dir = match (cfg.trig_dir, self.trigger_dir_toggle[player]) {
+                        (0, false) => animations::Direction::Positive,
+                        (0, true) => animations::Direction::Negative,
+                        (1, _) => animations::Direction::Stopped,
+                        (2, false) => animations::Direction::Negative,
+                        (2, true) => animations::Direction::Positive,
+                        _ => animations::Direction::Positive,
+                    };
+                    if cfg.trig_dir != 1 {
+                        self.trigger_dir_toggle[player] = !self.trigger_dir_toggle[player];
+                    }
+                    // Trigger offset: Random, Center, or Top
+                    let offset = match cfg.trig_offset {
+                        1 => animations::MAX_OFFSET / 2,
+                        2 => 0,
+                        _ => 0, // Random — overridden by init functions
+                    };
                     let params = animations::trigger::Parameters {
                         mode: match cfg.trig_mode {
                             1 => animations::trigger::Mode::ColorPulse,
@@ -283,19 +361,16 @@ impl LightingHandler {
                             7 => animations::trigger::Mode::Flash,
                             8 => animations::trigger::Mode::FlashFade,
                             9 => animations::trigger::Mode::FlashRainbow,
-                            _ => animations::trigger::Mode::NoTrigger,
+                            _ => animations::trigger::Mode::ColorPulse,
                         },
-                        direction: animations::Direction::Stopped,
+                        direction: dir,
                         fade_in_time_ns: (cfg.trig_fade_in_ms as u64) * 1_000_000,
                         fade_out_time_ns: (cfg.trig_fade_out_ms as u64) * 1_000_000,
-                        starting_offset: 0,
+                        starting_offset: offset,
                         pixels_per_pixel_group: cfg.trig_width as usize,
                     };
-                    match player {
-                        0 => self.a1.trigger(&params, self.frame_rate),
-                        1 => self.a2.trigger(&params, self.frame_rate),
-                        _ => {}
-                    }
+                    if player == 0 { self.a1.trigger(&params, self.frame_rate); }
+                    else { self.a2.trigger(&params, self.frame_rate); }
                 }
             }
         }
@@ -311,6 +386,8 @@ impl LightingHandler {
 pub enum LightingEvent {
     /// Encoder position changed for the given player (0 = P1, 1 = P2).
     EncoderMoved { player: usize, count: i32 },
+    /// Encoder spin direction changed.
+    DirectionChanged { player: usize, direction: crate::EncoderDirection },
     /// A gameplay or encoder-derived button was pressed.
     ButtonPressed { player: usize },
 }

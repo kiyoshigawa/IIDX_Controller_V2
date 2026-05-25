@@ -73,6 +73,9 @@ pub struct InputHandler<'a, D> {
     /// Previous encoder counts for change detection.
     last_encoder_p1_count: i32,
     last_encoder_p2_count: i32,
+    /// Previous encoder directions for change detection.
+    last_encoder_p1_direction: EncoderDirection,
+    last_encoder_p2_direction: EncoderDirection,
 }
 
 impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
@@ -91,6 +94,8 @@ impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
             idle_event_sent: false,
             last_encoder_p1_count: 0_i32,
             last_encoder_p2_count: 0_i32,
+            last_encoder_p1_direction: EncoderDirection::Stopped,
+            last_encoder_p2_direction: EncoderDirection::Stopped,
         }
     }
 
@@ -228,6 +233,22 @@ impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
             lighting_handler.handle_event(LightingEvent::EncoderMoved {
                 player: 1,
                 count: self.encoder_p2_count,
+            });
+        }
+
+        // Check encoder direction changes
+        if self.encoder_p1_direction != self.last_encoder_p1_direction {
+            self.last_encoder_p1_direction = self.encoder_p1_direction;
+            lighting_handler.handle_event(LightingEvent::DirectionChanged {
+                player: 0,
+                direction: self.encoder_p1_direction,
+            });
+        }
+        if self.encoder_p2_direction != self.last_encoder_p2_direction {
+            self.last_encoder_p2_direction = self.encoder_p2_direction;
+            lighting_handler.handle_event(LightingEvent::DirectionChanged {
+                player: 1,
+                direction: self.encoder_p2_direction,
             });
         }
     }

@@ -110,7 +110,11 @@ fn main() -> ! {
 
             // Re-read after cache flush so we see the freshly written data.
             &*(FLASH_STORAGE_BASE_ADDR as *const FlashStoragePersistentMemory)
-        } else if raw.lighting.brightness == 0 || raw.lighting.brightness > 200 {
+        } else if raw.lighting.brightness == 0
+            || raw.lighting.brightness > 200
+            || raw.lighting.players[0].bg_mode > 4
+            || raw.lighting.players[0].trig_dur_s > 60
+        {
             info!("Lighting config is uninitialized. Rewriting defaults...");
             let mut defaults = FlashStoragePersistentMemory::default();
             defaults.header = raw.header;
@@ -559,6 +563,7 @@ fn main() -> ! {
                 input_handler.detect_input_changes(now);
                 input_handler.process_encoder_events(&mut lighting_handler);
                 input_handler.process_button_events(&mut lighting_handler);
+                lighting_handler.sync_config(&input_handler.menu_handler.settings.lighting);
 
                 // core1 led strip update:
                 if timer.get_counter().ticks() > (last_led_update_ticks + LED_FRAME_TICKS) {
