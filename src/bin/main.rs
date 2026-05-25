@@ -110,6 +110,15 @@ fn main() -> ! {
 
             // Re-read after cache flush so we see the freshly written data.
             &*(FLASH_STORAGE_BASE_ADDR as *const FlashStoragePersistentMemory)
+        } else if raw.lighting.brightness == 0 || raw.lighting.brightness > 200 {
+            info!("Lighting config is uninitialized. Rewriting defaults...");
+            let mut defaults = FlashStoragePersistentMemory::default();
+            defaults.header = raw.header;
+            defaults.header_inv = raw.header_inv;
+            defaults.buttons = raw.buttons;
+            defaults.encoders = raw.encoders;
+            write_storage(&defaults);
+            &*(FLASH_STORAGE_BASE_ADDR as *const FlashStoragePersistentMemory)
         } else {
             info!("Storage is initialized. Using stored configuration.");
             raw
@@ -506,6 +515,7 @@ fn main() -> ! {
             // Lighting controller setup — two per-player animations
             let frame_rate: embedded_time::rate::Hertz = embedded_time::rate::Extensions::Hz(144);
             let mut lighting_handler = LightingHandler::new(frame_rate, TWELVE_BIT_OKLCH_RAINBOW);
+            lighting_handler.apply_config(&config.lighting);
 
             // core1 loop state variables:
             let mut last_core1_heartbeat_tick = 0_u64;

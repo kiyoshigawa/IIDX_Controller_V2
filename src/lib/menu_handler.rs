@@ -4,6 +4,7 @@
 //! that renders all OLED display output and controls the persistent settings
 //! for the controller.
 
+use crate::lighting_consts::{BG_MODE_NAMES, FG_MODE_NAMES, RAINBOW_NAMES, TRIG_MODE_NAMES};
 use crate::{
     BUF_SIZE, ButtonCode, DEFAULT_BUTTON_DEBOUNCE_TICKS, FlashStoragePersistentMemory, NUM_BUTTONS,
     NUM_ENCODERS, OledDisplay,
@@ -26,7 +27,7 @@ use embedded_graphics::{
 pub(crate) const BUTTON_GRAPHIC_ROW_HEIGHT: u8 = 36;
 
 /// Maximum number of menu levels that can be nested on the stack.
-const MAX_MENU_DEPTH: usize = 4;
+const MAX_MENU_DEPTH: usize = 6;
 
 /// Width of a single character in the FONT_9X18_BOLD font (pixels).
 const CHAR_W: i32 = 9;
@@ -198,6 +199,35 @@ enum SettingKey {
     EncoderDebounce(usize),
     EncoderStepThreshold(usize),
     EncoderMoveTimeout(usize),
+    // Lighting — "All" variants apply to both players
+    AllBgMode,
+    AllBgRainbow,
+    AllBgSpd,
+    AllFgMode,
+    AllFgRainbow,
+    AllFgSpd,
+    AllFgStep,
+    AllFgSize,
+    AllTrigMode,
+    AllTrigRainbow,
+    AllTrigFdIn,
+    AllTrigFdOut,
+    AllTrigSize,
+    // Lighting — per-player
+    PlayerBgMode(usize),
+    PlayerBgRainbow(usize),
+    PlayerBgSpd(usize),
+    PlayerFgMode(usize),
+    PlayerFgRainbow(usize),
+    PlayerFgSpd(usize),
+    PlayerFgStep(usize),
+    PlayerFgSize(usize),
+    PlayerTrigMode(usize),
+    PlayerTrigRainbow(usize),
+    PlayerTrigFdIn(usize),
+    PlayerTrigFdOut(usize),
+    PlayerTrigSize(usize),
+    GlobalBrightness,
 }
 
 /// A generic editor bound to a specific value type.  New editor types (e.g.
@@ -213,10 +243,10 @@ enum Editor {
         divisor: u32,
         unit: &'static str,
     },
-    // OptionSelect {
-    //     labels: &'static [&'static str],
-    //     current: usize,
-    // },
+    OptionSelect {
+        labels: &'static [&'static str],
+        current: usize,
+    },
     // BoolToggle(bool),
 }
 
@@ -234,6 +264,34 @@ enum ValueKey {
     AllButtonDebounce,
     ButtonDebounce(ButtonCode),
     EncoderDebounce(usize),
+    // Lighting
+    AllBgMode,
+    AllBgRainbow,
+    AllBgSpd,
+    AllFgMode,
+    AllFgRainbow,
+    AllFgSpd,
+    AllFgStep,
+    AllFgSize,
+    AllTrigMode,
+    AllTrigRainbow,
+    AllTrigFdIn,
+    AllTrigFdOut,
+    AllTrigSize,
+    PlayerBgMode(usize),
+    PlayerBgRainbow(usize),
+    PlayerBgSpd(usize),
+    PlayerFgMode(usize),
+    PlayerFgRainbow(usize),
+    PlayerFgSpd(usize),
+    PlayerFgStep(usize),
+    PlayerFgSize(usize),
+    PlayerTrigMode(usize),
+    PlayerTrigRainbow(usize),
+    PlayerTrigFdIn(usize),
+    PlayerTrigFdOut(usize),
+    PlayerTrigSize(usize),
+    GlobalBrightness,
 }
 
 impl From<ValueKey> for SettingKey {
@@ -242,12 +300,40 @@ impl From<ValueKey> for SettingKey {
             ValueKey::AllButtonDebounce => SettingKey::AllButtonDebounce,
             ValueKey::ButtonDebounce(c) => SettingKey::ButtonDebounce(c),
             ValueKey::EncoderDebounce(i) => SettingKey::EncoderDebounce(i),
+            ValueKey::AllBgMode => SettingKey::AllBgMode,
+            ValueKey::AllBgRainbow => SettingKey::AllBgRainbow,
+            ValueKey::AllBgSpd => SettingKey::AllBgSpd,
+            ValueKey::AllFgMode => SettingKey::AllFgMode,
+            ValueKey::AllFgRainbow => SettingKey::AllFgRainbow,
+            ValueKey::AllFgSpd => SettingKey::AllFgSpd,
+            ValueKey::AllFgStep => SettingKey::AllFgStep,
+            ValueKey::AllFgSize => SettingKey::AllFgSize,
+            ValueKey::AllTrigMode => SettingKey::AllTrigMode,
+            ValueKey::AllTrigRainbow => SettingKey::AllTrigRainbow,
+            ValueKey::AllTrigFdIn => SettingKey::AllTrigFdIn,
+            ValueKey::AllTrigFdOut => SettingKey::AllTrigFdOut,
+            ValueKey::AllTrigSize => SettingKey::AllTrigSize,
+            ValueKey::PlayerBgMode(p) => SettingKey::PlayerBgMode(p),
+            ValueKey::PlayerBgRainbow(p) => SettingKey::PlayerBgRainbow(p),
+            ValueKey::PlayerBgSpd(p) => SettingKey::PlayerBgSpd(p),
+            ValueKey::PlayerFgMode(p) => SettingKey::PlayerFgMode(p),
+            ValueKey::PlayerFgRainbow(p) => SettingKey::PlayerFgRainbow(p),
+            ValueKey::PlayerFgSpd(p) => SettingKey::PlayerFgSpd(p),
+            ValueKey::PlayerFgStep(p) => SettingKey::PlayerFgStep(p),
+            ValueKey::PlayerFgSize(p) => SettingKey::PlayerFgSize(p),
+            ValueKey::PlayerTrigMode(p) => SettingKey::PlayerTrigMode(p),
+            ValueKey::PlayerTrigRainbow(p) => SettingKey::PlayerTrigRainbow(p),
+            ValueKey::PlayerTrigFdIn(p) => SettingKey::PlayerTrigFdIn(p),
+            ValueKey::PlayerTrigFdOut(p) => SettingKey::PlayerTrigFdOut(p),
+            ValueKey::PlayerTrigSize(p) => SettingKey::PlayerTrigSize(p),
+            ValueKey::GlobalBrightness => SettingKey::GlobalBrightness,
         }
     }
 }
 
 /// What happens when a menu option is activated
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 enum MenuAction {
     OpenSubmenu(&'static MenuLevel),
     GoBack,
@@ -293,6 +379,21 @@ enum FieldDescriptor {
     EncoderDebounce(usize),
     EncoderStepThreshold(usize),
     EncoderMoveTimeout(usize),
+    // Lighting
+    PlayerBgMode(usize),
+    PlayerBgRainbow(usize),
+    PlayerBgSpd(usize),
+    PlayerFgMode(usize),
+    PlayerFgRainbow(usize),
+    PlayerFgSpd(usize),
+    PlayerFgStep(usize),
+    PlayerFgSize(usize),
+    PlayerTrigMode(usize),
+    PlayerTrigRainbow(usize),
+    PlayerTrigFdIn(usize),
+    PlayerTrigFdOut(usize),
+    PlayerTrigSize(usize),
+    PlayerBrightness(usize),
 }
 
 impl FieldDescriptor {
@@ -304,6 +405,20 @@ impl FieldDescriptor {
             Self::EncoderDebounce(_) => "Encoder Debounce",
             Self::EncoderStepThreshold(_) => "Encoder Threshold",
             Self::EncoderMoveTimeout(_) => "Encoder Timeout",
+            Self::PlayerBgMode(p) => if *p == 0 { "P1 BG" } else { "P2 BG" },
+            Self::PlayerFgMode(p) => if *p == 0 { "P1 FG" } else { "P2 FG" },
+            Self::PlayerTrigMode(p) => if *p == 0 { "P1 Trig" } else { "P2 Trig" },
+            Self::PlayerBrightness(p) => if *p == 0 { "P1 Brightness" } else { "P2 Brightness" },
+            Self::PlayerBgRainbow(p) => if *p == 0 { "P1 BgRnb" } else { "P2 BgRnb" },
+            Self::PlayerBgSpd(p) => if *p == 0 { "P1 BgSpd" } else { "P2 BgSpd" },
+            Self::PlayerFgRainbow(p) => if *p == 0 { "P1 FgRnb" } else { "P2 FgRnb" },
+            Self::PlayerFgSpd(p) => if *p == 0 { "P1 FgSpd" } else { "P2 FgSpd" },
+            Self::PlayerFgStep(p) => if *p == 0 { "P1 FgStp" } else { "P2 FgStp" },
+            Self::PlayerFgSize(p) => if *p == 0 { "P1 FgSz" } else { "P2 FgSz" },
+            Self::PlayerTrigRainbow(p) => if *p == 0 { "P1 TrRnb" } else { "P2 TrRnb" },
+            Self::PlayerTrigFdIn(p) => if *p == 0 { "P1 FdIn" } else { "P2 FdIn" },
+            Self::PlayerTrigFdOut(p) => if *p == 0 { "P1 FdOut" } else { "P2 FdOut" },
+            Self::PlayerTrigSize(p) => if *p == 0 { "P1 TrSz" } else { "P2 TrSz" },
         }
     }
 }
@@ -376,6 +491,27 @@ fn for_each_changed_field(
             FieldDescriptor::EncoderMoveTimeout(e)
         );
     }
+
+    // Lighting per-player fields
+    for p in 0..2_usize {
+        let pl = &settings.lighting.players[p];
+        let def_pl = &defaults.lighting.players[p];
+        check!(pl.bg_mode, def_pl.bg_mode, FieldDescriptor::PlayerBgMode(p));
+        check!(pl.bg_rainbow, def_pl.bg_rainbow, FieldDescriptor::PlayerBgRainbow(p));
+        check!(pl.bg_speed_ds, def_pl.bg_speed_ds, FieldDescriptor::PlayerBgSpd(p));
+        check!(pl.fg_mode, def_pl.fg_mode, FieldDescriptor::PlayerFgMode(p));
+        check!(pl.fg_rainbow, def_pl.fg_rainbow, FieldDescriptor::PlayerFgRainbow(p));
+        check!(pl.fg_speed_ds, def_pl.fg_speed_ds, FieldDescriptor::PlayerFgSpd(p));
+        check!(pl.fg_step_ds, def_pl.fg_step_ds, FieldDescriptor::PlayerFgStep(p));
+        check!(pl.fg_px_per_group, def_pl.fg_px_per_group, FieldDescriptor::PlayerFgSize(p));
+        check!(pl.trig_mode, def_pl.trig_mode, FieldDescriptor::PlayerTrigMode(p));
+        check!(pl.trig_rainbow, def_pl.trig_rainbow, FieldDescriptor::PlayerTrigRainbow(p));
+        check!(pl.trig_fade_in_ms, def_pl.trig_fade_in_ms, FieldDescriptor::PlayerTrigFdIn(p));
+        check!(pl.trig_fade_out_ms, def_pl.trig_fade_out_ms, FieldDescriptor::PlayerTrigFdOut(p));
+        check!(pl.trig_width, def_pl.trig_width, FieldDescriptor::PlayerTrigSize(p));
+    }
+    // Global brightness
+    check!(settings.lighting.brightness, defaults.lighting.brightness, FieldDescriptor::PlayerBrightness(0));
 
     count
 }
@@ -454,25 +590,100 @@ fn clamp_step(val: u32, step: u32, min: u32, max: u32, up: bool) -> u32 {
 /// current value from `settings` and looking up the adjustment metadata.
 fn build_editor(settings: &FlashStoragePersistentMemory, vk: ValueKey) -> (Editor, Commit) {
     let key: SettingKey = vk.into();
-    let meta = key.meta();
-    let value = match key {
-        SettingKey::AllButtonDebounce => settings.buttons[0].debounce_ticks as u32,
-        SettingKey::ButtonDebounce(code) => settings.buttons[code as usize].debounce_ticks as u32,
-        SettingKey::EncoderDebounce(idx) => settings.encoders[idx].debounce_ticks as u32,
-        // The remaining SettingKey variants are never constructed through
-        // ValueKey (they are used only via WikiEdit or AllButtonDebounce
-        // code path), but the match must be exhaustive:
-        SettingKey::EncoderStepThreshold(_) | SettingKey::EncoderMoveTimeout(_) => 0,
-    };
-    let editor = Editor::IntRange {
-        value,
-        step: meta.step,
-        min: meta.min,
-        max: meta.max,
-        divisor: meta.divisor,
-        unit: meta.unit,
-    };
-    (editor, Commit::Setting(key))
+    match key {
+        // OptionSelect keys — return early
+        SettingKey::AllBgMode => {
+            let current = settings.lighting.players[0].bg_mode as usize;
+            (Editor::OptionSelect { labels: BG_MODE_NAMES, current }, Commit::Setting(key))
+        }
+        SettingKey::PlayerBgMode(p) => {
+            let current = settings.lighting.players[p].bg_mode as usize;
+            (Editor::OptionSelect { labels: BG_MODE_NAMES, current }, Commit::Setting(key))
+        }
+        SettingKey::AllBgRainbow => {
+            let current = settings.lighting.players[0].bg_rainbow as usize;
+            (Editor::OptionSelect { labels: RAINBOW_NAMES, current }, Commit::Setting(key))
+        }
+        SettingKey::PlayerBgRainbow(p) => {
+            let current = settings.lighting.players[p].bg_rainbow as usize;
+            (Editor::OptionSelect { labels: RAINBOW_NAMES, current }, Commit::Setting(key))
+        }
+        SettingKey::AllFgMode => {
+            let current = settings.lighting.players[0].fg_mode as usize;
+            (Editor::OptionSelect { labels: FG_MODE_NAMES, current }, Commit::Setting(key))
+        }
+        SettingKey::PlayerFgMode(p) => {
+            let current = settings.lighting.players[p].fg_mode as usize;
+            (Editor::OptionSelect { labels: FG_MODE_NAMES, current }, Commit::Setting(key))
+        }
+        SettingKey::AllFgRainbow => {
+            let current = settings.lighting.players[0].fg_rainbow as usize;
+            (Editor::OptionSelect { labels: RAINBOW_NAMES, current }, Commit::Setting(key))
+        }
+        SettingKey::PlayerFgRainbow(p) => {
+            let current = settings.lighting.players[p].fg_rainbow as usize;
+            (Editor::OptionSelect { labels: RAINBOW_NAMES, current }, Commit::Setting(key))
+        }
+        SettingKey::AllTrigMode => {
+            let current = settings.lighting.players[0].trig_mode as usize;
+            (Editor::OptionSelect { labels: TRIG_MODE_NAMES, current }, Commit::Setting(key))
+        }
+        SettingKey::PlayerTrigMode(p) => {
+            let current = settings.lighting.players[p].trig_mode as usize;
+            (Editor::OptionSelect { labels: TRIG_MODE_NAMES, current }, Commit::Setting(key))
+        }
+        SettingKey::AllTrigRainbow => {
+            let current = settings.lighting.players[0].trig_rainbow as usize;
+            (Editor::OptionSelect { labels: RAINBOW_NAMES, current }, Commit::Setting(key))
+        }
+        SettingKey::PlayerTrigRainbow(p) => {
+            let current = settings.lighting.players[p].trig_rainbow as usize;
+            (Editor::OptionSelect { labels: RAINBOW_NAMES, current }, Commit::Setting(key))
+        }
+        // IntRange keys — fall through to meta-based editor
+        _ => {
+            let meta = key.meta();
+            let value = match key {
+                SettingKey::AllButtonDebounce => settings.buttons[0].debounce_ticks as u32,
+                SettingKey::ButtonDebounce(code) => settings.buttons[code as usize].debounce_ticks as u32,
+                SettingKey::EncoderDebounce(idx) => settings.encoders[idx].debounce_ticks as u32,
+                SettingKey::EncoderStepThreshold(idx) => settings.encoders[idx].step_threshold as u32,
+                SettingKey::EncoderMoveTimeout(idx) => settings.encoders[idx].move_timeout_ticks as u32,
+                SettingKey::AllBgSpd => settings.lighting.players[0].bg_speed_ds as u32,
+                SettingKey::AllFgSpd => settings.lighting.players[0].fg_speed_ds as u32,
+                SettingKey::AllFgStep => settings.lighting.players[0].fg_step_ds as u32,
+                SettingKey::AllFgSize => settings.lighting.players[0].fg_px_per_group as u32,
+                SettingKey::AllTrigFdIn => settings.lighting.players[0].trig_fade_in_ms as u32,
+                SettingKey::AllTrigFdOut => settings.lighting.players[0].trig_fade_out_ms as u32,
+                SettingKey::AllTrigSize => settings.lighting.players[0].trig_width as u32,
+                SettingKey::PlayerBgSpd(p) => settings.lighting.players[p].bg_speed_ds as u32,
+                SettingKey::PlayerFgSpd(p) => settings.lighting.players[p].fg_speed_ds as u32,
+                SettingKey::PlayerFgStep(p) => settings.lighting.players[p].fg_step_ds as u32,
+                SettingKey::PlayerFgSize(p) => settings.lighting.players[p].fg_px_per_group as u32,
+                SettingKey::PlayerTrigFdIn(p) => settings.lighting.players[p].trig_fade_in_ms as u32,
+                SettingKey::PlayerTrigFdOut(p) => settings.lighting.players[p].trig_fade_out_ms as u32,
+                SettingKey::PlayerTrigSize(p) => settings.lighting.players[p].trig_width as u32,
+                SettingKey::GlobalBrightness => settings.lighting.brightness as u32,
+                // These will never be hit because they return early above,
+                // but the match must be exhaustive:
+                SettingKey::AllBgMode | SettingKey::PlayerBgMode(_)
+                | SettingKey::AllBgRainbow | SettingKey::PlayerBgRainbow(_)
+                | SettingKey::AllFgMode | SettingKey::PlayerFgMode(_)
+                | SettingKey::AllFgRainbow | SettingKey::PlayerFgRainbow(_)
+                | SettingKey::AllTrigMode | SettingKey::PlayerTrigMode(_)
+                | SettingKey::AllTrigRainbow | SettingKey::PlayerTrigRainbow(_) => 0,
+            };
+            let editor = Editor::IntRange {
+                value,
+                step: meta.step,
+                min: meta.min,
+                max: meta.max,
+                divisor: meta.divisor,
+                unit: meta.unit,
+            };
+            (editor, Commit::Setting(key))
+        }
+    }
 }
 
 /// Execute a [`Commit`] by writing `value` into the appropriate field.
@@ -538,7 +749,7 @@ static ROOT_MENU: MenuLevel = MenuLevel {
     options: &[
         MenuOption {
             label: "Lighting",
-            action: MenuAction::None,
+            action: MenuAction::OpenSubmenu(&LIGHTING_MENU),
         },
         MenuOption {
             label: "Debug",
@@ -636,6 +847,160 @@ static ENCODER_SENS_MENU: MenuLevel = MenuLevel {
             label: "Back",
             action: MenuAction::GoBack,
         },
+    ],
+};
+
+static LIGHTING_MENU: MenuLevel = MenuLevel {
+    title: "Lighting",
+    options: &[
+        MenuOption { label: "Both",   action: MenuAction::OpenSubmenu(&BOTH_MENU) },
+        MenuOption { label: "P1",     action: MenuAction::OpenSubmenu(&P1_MENU) },
+        MenuOption { label: "P2",     action: MenuAction::OpenSubmenu(&P2_MENU) },
+        MenuOption { label: "Global", action: MenuAction::OpenSubmenu(&GLOBAL_MENU) },
+        MenuOption { label: "Back",   action: MenuAction::GoBack },
+    ],
+};
+
+static BOTH_MENU: MenuLevel = MenuLevel {
+    title: "Both",
+    options: &[
+        MenuOption { label: "BG",   action: MenuAction::OpenSubmenu(&BG_ALL_MENU) },
+        MenuOption { label: "FG",   action: MenuAction::OpenSubmenu(&FG_ALL_MENU) },
+        MenuOption { label: "Trig", action: MenuAction::OpenSubmenu(&TRIG_ALL_MENU) },
+        MenuOption { label: "Back", action: MenuAction::GoBack },
+    ],
+};
+
+static P1_MENU: MenuLevel = MenuLevel {
+    title: "P1",
+    options: &[
+        MenuOption { label: "BG",   action: MenuAction::OpenSubmenu(&BG_P1_MENU) },
+        MenuOption { label: "FG",   action: MenuAction::OpenSubmenu(&FG_P1_MENU) },
+        MenuOption { label: "Trig", action: MenuAction::OpenSubmenu(&TRIG_P1_MENU) },
+        MenuOption { label: "Back", action: MenuAction::GoBack },
+    ],
+};
+
+static P2_MENU: MenuLevel = MenuLevel {
+    title: "P2",
+    options: &[
+        MenuOption { label: "BG",   action: MenuAction::OpenSubmenu(&BG_P2_MENU) },
+        MenuOption { label: "FG",   action: MenuAction::OpenSubmenu(&FG_P2_MENU) },
+        MenuOption { label: "Trig", action: MenuAction::OpenSubmenu(&TRIG_P2_MENU) },
+        MenuOption { label: "Back", action: MenuAction::GoBack },
+    ],
+};
+
+// BG submenus for All, P1, P2
+static BG_ALL_MENU: MenuLevel = MenuLevel {
+    title: "BG",
+    options: &[
+        MenuOption { label: "Mode",  action: MenuAction::EditValue(ValueKey::AllBgMode) },
+        MenuOption { label: "Rainb", action: MenuAction::EditValue(ValueKey::AllBgRainbow) },
+        MenuOption { label: "Spd",   action: MenuAction::EditValue(ValueKey::AllBgSpd) },
+        MenuOption { label: "Back",  action: MenuAction::GoBack },
+    ],
+};
+
+static BG_P1_MENU: MenuLevel = MenuLevel {
+    title: "P1 BG",
+    options: &[
+        MenuOption { label: "Mode",  action: MenuAction::EditValue(ValueKey::PlayerBgMode(0)) },
+        MenuOption { label: "Rainb", action: MenuAction::EditValue(ValueKey::PlayerBgRainbow(0)) },
+        MenuOption { label: "Spd",   action: MenuAction::EditValue(ValueKey::PlayerBgSpd(0)) },
+        MenuOption { label: "Back",  action: MenuAction::GoBack },
+    ],
+};
+
+static BG_P2_MENU: MenuLevel = MenuLevel {
+    title: "P2 BG",
+    options: &[
+        MenuOption { label: "Mode",  action: MenuAction::EditValue(ValueKey::PlayerBgMode(1)) },
+        MenuOption { label: "Rainb", action: MenuAction::EditValue(ValueKey::PlayerBgRainbow(1)) },
+        MenuOption { label: "Spd",   action: MenuAction::EditValue(ValueKey::PlayerBgSpd(1)) },
+        MenuOption { label: "Back",  action: MenuAction::GoBack },
+    ],
+};
+
+// FG submenus for All, P1, P2
+static FG_ALL_MENU: MenuLevel = MenuLevel {
+    title: "FG",
+    options: &[
+        MenuOption { label: "Mode",  action: MenuAction::EditValue(ValueKey::AllFgMode) },
+        MenuOption { label: "Rainb", action: MenuAction::EditValue(ValueKey::AllFgRainbow) },
+        MenuOption { label: "Spd",   action: MenuAction::EditValue(ValueKey::AllFgSpd) },
+        MenuOption { label: "Step",  action: MenuAction::EditValue(ValueKey::AllFgStep) },
+        MenuOption { label: "Size",  action: MenuAction::EditValue(ValueKey::AllFgSize) },
+        MenuOption { label: "Back",  action: MenuAction::GoBack },
+    ],
+};
+
+static FG_P1_MENU: MenuLevel = MenuLevel {
+    title: "P1 FG",
+    options: &[
+        MenuOption { label: "Mode",  action: MenuAction::EditValue(ValueKey::PlayerFgMode(0)) },
+        MenuOption { label: "Rainb", action: MenuAction::EditValue(ValueKey::PlayerFgRainbow(0)) },
+        MenuOption { label: "Spd",   action: MenuAction::EditValue(ValueKey::PlayerFgSpd(0)) },
+        MenuOption { label: "Step",  action: MenuAction::EditValue(ValueKey::PlayerFgStep(0)) },
+        MenuOption { label: "Size",  action: MenuAction::EditValue(ValueKey::PlayerFgSize(0)) },
+        MenuOption { label: "Back",  action: MenuAction::GoBack },
+    ],
+};
+
+static FG_P2_MENU: MenuLevel = MenuLevel {
+    title: "P2 FG",
+    options: &[
+        MenuOption { label: "Mode",  action: MenuAction::EditValue(ValueKey::PlayerFgMode(1)) },
+        MenuOption { label: "Rainb", action: MenuAction::EditValue(ValueKey::PlayerFgRainbow(1)) },
+        MenuOption { label: "Spd",   action: MenuAction::EditValue(ValueKey::PlayerFgSpd(1)) },
+        MenuOption { label: "Step",  action: MenuAction::EditValue(ValueKey::PlayerFgStep(1)) },
+        MenuOption { label: "Size",  action: MenuAction::EditValue(ValueKey::PlayerFgSize(1)) },
+        MenuOption { label: "Back",  action: MenuAction::GoBack },
+    ],
+};
+
+// Trig submenus for All, P1, P2
+static TRIG_ALL_MENU: MenuLevel = MenuLevel {
+    title: "Trig",
+    options: &[
+        MenuOption { label: "Mode",  action: MenuAction::EditValue(ValueKey::AllTrigMode) },
+        MenuOption { label: "Rainb", action: MenuAction::EditValue(ValueKey::AllTrigRainbow) },
+        MenuOption { label: "FdIn",  action: MenuAction::EditValue(ValueKey::AllTrigFdIn) },
+        MenuOption { label: "FdOut", action: MenuAction::EditValue(ValueKey::AllTrigFdOut) },
+        MenuOption { label: "Size",  action: MenuAction::EditValue(ValueKey::AllTrigSize) },
+        MenuOption { label: "Back",  action: MenuAction::GoBack },
+    ],
+};
+
+static TRIG_P1_MENU: MenuLevel = MenuLevel {
+    title: "P1 Trig",
+    options: &[
+        MenuOption { label: "Mode",  action: MenuAction::EditValue(ValueKey::PlayerTrigMode(0)) },
+        MenuOption { label: "Rainb", action: MenuAction::EditValue(ValueKey::PlayerTrigRainbow(0)) },
+        MenuOption { label: "FdIn",  action: MenuAction::EditValue(ValueKey::PlayerTrigFdIn(0)) },
+        MenuOption { label: "FdOut", action: MenuAction::EditValue(ValueKey::PlayerTrigFdOut(0)) },
+        MenuOption { label: "Size",  action: MenuAction::EditValue(ValueKey::PlayerTrigSize(0)) },
+        MenuOption { label: "Back",  action: MenuAction::GoBack },
+    ],
+};
+
+static TRIG_P2_MENU: MenuLevel = MenuLevel {
+    title: "P2 Trig",
+    options: &[
+        MenuOption { label: "Mode",  action: MenuAction::EditValue(ValueKey::PlayerTrigMode(1)) },
+        MenuOption { label: "Rainb", action: MenuAction::EditValue(ValueKey::PlayerTrigRainbow(1)) },
+        MenuOption { label: "FdIn",  action: MenuAction::EditValue(ValueKey::PlayerTrigFdIn(1)) },
+        MenuOption { label: "FdOut", action: MenuAction::EditValue(ValueKey::PlayerTrigFdOut(1)) },
+        MenuOption { label: "Size",  action: MenuAction::EditValue(ValueKey::PlayerTrigSize(1)) },
+        MenuOption { label: "Back",  action: MenuAction::GoBack },
+    ],
+};
+
+static GLOBAL_MENU: MenuLevel = MenuLevel {
+    title: "Global",
+    options: &[
+        MenuOption { label: "Brght", action: MenuAction::EditValue(ValueKey::GlobalBrightness) },
+        MenuOption { label: "Back",  action: MenuAction::GoBack },
     ],
 };
 
@@ -826,6 +1191,29 @@ impl SettingKey {
                 divisor: 1_000,
                 unit: "ms",
             },
+            Self::AllBgSpd | Self::PlayerBgSpd(_)
+            | Self::AllFgSpd | Self::PlayerFgSpd(_) => SettingMeta {
+                step: 1, min: 5, max: 600, divisor: 10, unit: "s",
+            },
+            Self::AllFgStep | Self::PlayerFgStep(_) => SettingMeta {
+                step: 1, min: 1, max: 200, divisor: 10, unit: "s",
+            },
+            Self::AllFgSize | Self::PlayerFgSize(_)
+            | Self::AllTrigSize | Self::PlayerTrigSize(_) => SettingMeta {
+                step: 1, min: 1, max: 10, divisor: 1, unit: "px",
+            },
+            Self::AllTrigFdIn | Self::PlayerTrigFdIn(_) => SettingMeta {
+                step: 50, min: 50, max: 2000, divisor: 1, unit: "ms",
+            },
+            Self::AllTrigFdOut | Self::PlayerTrigFdOut(_) => SettingMeta {
+                step: 50, min: 50, max: 5000, divisor: 1, unit: "ms",
+            },
+            Self::GlobalBrightness => SettingMeta {
+                step: 5, min: 0, max: 255, divisor: 1, unit: "",
+            },
+            // All the OptionSelect keys (modes, rainbows) fall through to a dummy meta
+            // since they are never read via meta() — write_option_value handles them
+            _ => SettingMeta { step: 1, min: 0, max: 1, divisor: 1, unit: "" },
         }
     }
 }
@@ -1167,7 +1555,18 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                     }
                     _ => {}
                 },
-                // Editor::OptionSelect { labels, current } => ...,
+                Editor::OptionSelect { labels, current } => match button {
+                    ButtonCode::CcUp | ButtonCode::CcRight => {
+                        *current = (*current + 1) % labels.len();
+                    }
+                    ButtonCode::CcDown | ButtonCode::CcLeft => {
+                        *current = (*current + labels.len() - 1) % labels.len();
+                    }
+                    ButtonCode::CcSelect => {
+                        do_commit = Some((commit, *current as u32));
+                    }
+                    _ => {}
+                },
                 // Editor::BoolToggle(v) => ...,
             }
             if let Some((commit, val)) = do_commit {
@@ -1470,11 +1869,15 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
 
     fn render_editing_screen(&mut self) {
         if let MenuSubState::Editing { ref editor, .. } = self.state {
-            let override_val = match editor {
-                Editor::IntRange { value, .. } => Some(*value),
-            };
             write!(self.title_buf, "{}", self.current_level().title).unwrap();
-            self.render_options(override_val);
+            match editor {
+                Editor::OptionSelect { current, .. } => {
+                    self.render_options(Some(*current as u32));
+                }
+                Editor::IntRange { value, .. } => {
+                    self.render_options(Some(*value));
+                }
+            }
             self.draw_menu_text(Some(2));
         }
     }
@@ -1730,12 +2133,33 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             MenuAction::EditValue(vk) => {
                 let key: SettingKey = vk.into();
                 let val = override_val.unwrap_or_else(|| self.read_setting(key));
-                let meta = key.meta();
-                let display_val = val / meta.divisor;
-                if meta.unit.is_empty() {
-                    write!(buf, "{}", display_val).unwrap();
-                } else {
-                    write!(buf, "{} {}", display_val, meta.unit).unwrap();
+                match vk {
+                    ValueKey::AllBgMode | ValueKey::PlayerBgMode(_) => {
+                        write!(buf, "{}", BG_MODE_NAMES[val as usize]).unwrap();
+                    }
+                    ValueKey::AllFgMode | ValueKey::PlayerFgMode(_) => {
+                        write!(buf, "{}", FG_MODE_NAMES[val as usize]).unwrap();
+                    }
+                    ValueKey::AllTrigMode | ValueKey::PlayerTrigMode(_) => {
+                        write!(buf, "{}", TRIG_MODE_NAMES[val as usize]).unwrap();
+                    }
+                    ValueKey::AllBgRainbow | ValueKey::PlayerBgRainbow(_)
+                    | ValueKey::AllFgRainbow | ValueKey::PlayerFgRainbow(_)
+                    | ValueKey::AllTrigRainbow | ValueKey::PlayerTrigRainbow(_) => {
+                        write!(buf, "{}", RAINBOW_NAMES[val as usize]).unwrap();
+                    }
+                    _ => {
+                        let meta = key.meta();
+                        let display_val = val / meta.divisor;
+                        if meta.divisor > 1 && meta.step < meta.divisor {
+                            let frac = val % meta.divisor;
+                            write!(buf, "{}.{} {}", display_val, frac, meta.unit).unwrap();
+                        } else if meta.unit.is_empty() {
+                            write!(buf, "{}", display_val).unwrap();
+                        } else {
+                            write!(buf, "{} {}", display_val, meta.unit).unwrap();
+                        }
+                    }
                 }
                 true
             }
@@ -2120,6 +2544,122 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 idx += 1;
             }
         }
+        // Lighting fields
+        for p in 0..2 {
+            if self.settings.lighting.players[p].bg_mode != defaults.lighting.players[p].bg_mode {
+                if idx == target_idx {
+                    let key = SettingKey::PlayerBgMode(p);
+                    self.write_setting(key, defaults.lighting.players[p].bg_mode as u32);
+                    return;
+                }
+                idx += 1;
+            }
+            if self.settings.lighting.players[p].bg_rainbow != defaults.lighting.players[p].bg_rainbow {
+                if idx == target_idx {
+                    let key = SettingKey::PlayerBgRainbow(p);
+                    self.write_setting(key, defaults.lighting.players[p].bg_rainbow as u32);
+                    return;
+                }
+                idx += 1;
+            }
+            if self.settings.lighting.players[p].bg_speed_ds != defaults.lighting.players[p].bg_speed_ds {
+                if idx == target_idx {
+                    let key = SettingKey::PlayerBgSpd(p);
+                    self.write_setting(key, defaults.lighting.players[p].bg_speed_ds as u32);
+                    return;
+                }
+                idx += 1;
+            }
+            if self.settings.lighting.players[p].fg_mode != defaults.lighting.players[p].fg_mode {
+                if idx == target_idx {
+                    let key = SettingKey::PlayerFgMode(p);
+                    self.write_setting(key, defaults.lighting.players[p].fg_mode as u32);
+                    return;
+                }
+                idx += 1;
+            }
+            if self.settings.lighting.players[p].fg_rainbow != defaults.lighting.players[p].fg_rainbow {
+                if idx == target_idx {
+                    let key = SettingKey::PlayerFgRainbow(p);
+                    self.write_setting(key, defaults.lighting.players[p].fg_rainbow as u32);
+                    return;
+                }
+                idx += 1;
+            }
+            if self.settings.lighting.players[p].fg_speed_ds != defaults.lighting.players[p].fg_speed_ds {
+                if idx == target_idx {
+                    let key = SettingKey::PlayerFgSpd(p);
+                    self.write_setting(key, defaults.lighting.players[p].fg_speed_ds as u32);
+                    return;
+                }
+                idx += 1;
+            }
+            if self.settings.lighting.players[p].fg_step_ds != defaults.lighting.players[p].fg_step_ds {
+                if idx == target_idx {
+                    let key = SettingKey::PlayerFgStep(p);
+                    self.write_setting(key, defaults.lighting.players[p].fg_step_ds as u32);
+                    return;
+                }
+                idx += 1;
+            }
+            if self.settings.lighting.players[p].fg_px_per_group != defaults.lighting.players[p].fg_px_per_group {
+                if idx == target_idx {
+                    let key = SettingKey::PlayerFgSize(p);
+                    self.write_setting(key, defaults.lighting.players[p].fg_px_per_group as u32);
+                    return;
+                }
+                idx += 1;
+            }
+            if self.settings.lighting.players[p].trig_mode != defaults.lighting.players[p].trig_mode {
+                if idx == target_idx {
+                    let key = SettingKey::PlayerTrigMode(p);
+                    self.write_setting(key, defaults.lighting.players[p].trig_mode as u32);
+                    return;
+                }
+                idx += 1;
+            }
+            if self.settings.lighting.players[p].trig_rainbow != defaults.lighting.players[p].trig_rainbow {
+                if idx == target_idx {
+                    let key = SettingKey::PlayerTrigRainbow(p);
+                    self.write_setting(key, defaults.lighting.players[p].trig_rainbow as u32);
+                    return;
+                }
+                idx += 1;
+            }
+            if self.settings.lighting.players[p].trig_fade_in_ms != defaults.lighting.players[p].trig_fade_in_ms {
+                if idx == target_idx {
+                    let key = SettingKey::PlayerTrigFdIn(p);
+                    self.write_setting(key, defaults.lighting.players[p].trig_fade_in_ms as u32);
+                    return;
+                }
+                idx += 1;
+            }
+            if self.settings.lighting.players[p].trig_fade_out_ms != defaults.lighting.players[p].trig_fade_out_ms {
+                if idx == target_idx {
+                    let key = SettingKey::PlayerTrigFdOut(p);
+                    self.write_setting(key, defaults.lighting.players[p].trig_fade_out_ms as u32);
+                    return;
+                }
+                idx += 1;
+            }
+            if self.settings.lighting.players[p].trig_width != defaults.lighting.players[p].trig_width {
+                if idx == target_idx {
+                    let key = SettingKey::PlayerTrigSize(p);
+                    self.write_setting(key, defaults.lighting.players[p].trig_width as u32);
+                    return;
+                }
+                idx += 1;
+            }
+        }
+        // Global brightness
+        if self.settings.lighting.brightness != defaults.lighting.brightness {
+            if idx == target_idx {
+                self.write_setting(SettingKey::GlobalBrightness, defaults.lighting.brightness as u32);
+                return;
+            }
+            idx += 1;
+        }
+        let _ = idx;
     }
 
     /// Render the show-custom screen: three lines of changed settings.
@@ -2153,13 +2693,13 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
 
         // ── Determine section title from cursor position ──
         let mut section = "?";
-        let mut idx = 0_usize;
+        let idx = core::cell::Cell::new(0_usize);
         for_each_changed_field(&self.settings, &defaults, |field, _, _| {
-            if idx == cursor {
+            if idx.get() == cursor {
                 section = field.section_title();
                 return false;
             }
-            idx += 1;
+            idx.set(idx.get() + 1);
             true
         });
         self.title_buf.reset();
@@ -2266,6 +2806,62 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                     let name = if e == 0 { "P1Etm" } else { "P2Etm" };
                     write!(buf, "{}: {} ms", name, cur / 1_000).ok();
                 }
+                FieldDescriptor::PlayerBgMode(p) => {
+                    let name = if p == 0 { "P1BgM" } else { "P2BgM" };
+                    write!(buf, "{}: {}", name, BG_MODE_NAMES[cur as usize]).ok();
+                }
+                FieldDescriptor::PlayerBgRainbow(p) => {
+                    let name = if p == 0 { "P1BgR" } else { "P2BgR" };
+                    write!(buf, "{}: {}", name, RAINBOW_NAMES[cur as usize]).ok();
+                }
+                FieldDescriptor::PlayerBgSpd(p) => {
+                    let name = if p == 0 { "P1BgS" } else { "P2BgS" };
+                    write!(buf, "{}: {} s", name, cur / 10).ok();
+                }
+                FieldDescriptor::PlayerFgMode(p) => {
+                    let name = if p == 0 { "P1FgM" } else { "P2FgM" };
+                    write!(buf, "{}: {}", name, FG_MODE_NAMES[cur as usize]).ok();
+                }
+                FieldDescriptor::PlayerFgRainbow(p) => {
+                    let name = if p == 0 { "P1FgR" } else { "P2FgR" };
+                    write!(buf, "{}: {}", name, RAINBOW_NAMES[cur as usize]).ok();
+                }
+                FieldDescriptor::PlayerFgSpd(p) => {
+                    let name = if p == 0 { "P1FgS" } else { "P2FgS" };
+                    write!(buf, "{}: {} s", name, cur / 10).ok();
+                }
+                FieldDescriptor::PlayerFgStep(p) => {
+                    let name = if p == 0 { "P1FgSt" } else { "P2FgSt" };
+                    write!(buf, "{}: {} s", name, cur / 10).ok();
+                }
+                FieldDescriptor::PlayerFgSize(p) => {
+                    let name = if p == 0 { "P1FgSz" } else { "P2FgSz" };
+                    write!(buf, "{}: {} px", name, cur).ok();
+                }
+                FieldDescriptor::PlayerTrigMode(p) => {
+                    let name = if p == 0 { "P1TrM" } else { "P2TrM" };
+                    write!(buf, "{}: {}", name, TRIG_MODE_NAMES[cur as usize]).ok();
+                }
+                FieldDescriptor::PlayerTrigRainbow(p) => {
+                    let name = if p == 0 { "P1TrR" } else { "P2TrR" };
+                    write!(buf, "{}: {}", name, RAINBOW_NAMES[cur as usize]).ok();
+                }
+                FieldDescriptor::PlayerTrigFdIn(p) => {
+                    let name = if p == 0 { "P1FdI" } else { "P2FdI" };
+                    write!(buf, "{}: {} ms", name, cur).ok();
+                }
+                FieldDescriptor::PlayerTrigFdOut(p) => {
+                    let name = if p == 0 { "P1FdO" } else { "P2FdO" };
+                    write!(buf, "{}: {} ms", name, cur).ok();
+                }
+                FieldDescriptor::PlayerTrigSize(p) => {
+                    let name = if p == 0 { "P1TrSz" } else { "P2TrSz" };
+                    write!(buf, "{}: {} px", name, cur).ok();
+                }
+                FieldDescriptor::PlayerBrightness(p) => {
+                    let name = if p == 0 { "P1Brt" } else { "P2Brt" };
+                    write!(buf, "{}: {}", name, cur).ok();
+                }
             }
             false
         });
@@ -2326,6 +2922,35 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             SettingKey::EncoderMoveTimeout(idx) => {
                 self.settings.encoders[idx].move_timeout_ticks as u32
             }
+            // Lighting — All variants read from player 0
+            SettingKey::AllBgMode => self.settings.lighting.players[0].bg_mode as u32,
+            SettingKey::AllBgRainbow => self.settings.lighting.players[0].bg_rainbow as u32,
+            SettingKey::AllBgSpd => self.settings.lighting.players[0].bg_speed_ds as u32,
+            SettingKey::AllFgMode => self.settings.lighting.players[0].fg_mode as u32,
+            SettingKey::AllFgRainbow => self.settings.lighting.players[0].fg_rainbow as u32,
+            SettingKey::AllFgSpd => self.settings.lighting.players[0].fg_speed_ds as u32,
+            SettingKey::AllFgStep => self.settings.lighting.players[0].fg_step_ds as u32,
+            SettingKey::AllFgSize => self.settings.lighting.players[0].fg_px_per_group as u32,
+            SettingKey::AllTrigMode => self.settings.lighting.players[0].trig_mode as u32,
+            SettingKey::AllTrigRainbow => self.settings.lighting.players[0].trig_rainbow as u32,
+            SettingKey::AllTrigFdIn => self.settings.lighting.players[0].trig_fade_in_ms as u32,
+            SettingKey::AllTrigFdOut => self.settings.lighting.players[0].trig_fade_out_ms as u32,
+            SettingKey::AllTrigSize => self.settings.lighting.players[0].trig_width as u32,
+            // Lighting — per-player
+            SettingKey::PlayerBgMode(p) => self.settings.lighting.players[p].bg_mode as u32,
+            SettingKey::PlayerBgRainbow(p) => self.settings.lighting.players[p].bg_rainbow as u32,
+            SettingKey::PlayerBgSpd(p) => self.settings.lighting.players[p].bg_speed_ds as u32,
+            SettingKey::PlayerFgMode(p) => self.settings.lighting.players[p].fg_mode as u32,
+            SettingKey::PlayerFgRainbow(p) => self.settings.lighting.players[p].fg_rainbow as u32,
+            SettingKey::PlayerFgSpd(p) => self.settings.lighting.players[p].fg_speed_ds as u32,
+            SettingKey::PlayerFgStep(p) => self.settings.lighting.players[p].fg_step_ds as u32,
+            SettingKey::PlayerFgSize(p) => self.settings.lighting.players[p].fg_px_per_group as u32,
+            SettingKey::PlayerTrigMode(p) => self.settings.lighting.players[p].trig_mode as u32,
+            SettingKey::PlayerTrigRainbow(p) => self.settings.lighting.players[p].trig_rainbow as u32,
+            SettingKey::PlayerTrigFdIn(p) => self.settings.lighting.players[p].trig_fade_in_ms as u32,
+            SettingKey::PlayerTrigFdOut(p) => self.settings.lighting.players[p].trig_fade_out_ms as u32,
+            SettingKey::PlayerTrigSize(p) => self.settings.lighting.players[p].trig_width as u32,
+            SettingKey::GlobalBrightness => self.settings.lighting.brightness as u32,
         }
     }
 
@@ -2349,6 +2974,61 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             SettingKey::EncoderMoveTimeout(idx) => {
                 self.settings.encoders[idx].move_timeout_ticks = value as u64;
             }
+            // Lighting — All variants write to both players
+            SettingKey::AllBgMode => {
+                for p in 0..2 { self.settings.lighting.players[p].bg_mode = value as u8; }
+            }
+            SettingKey::AllBgRainbow => {
+                for p in 0..2 { self.settings.lighting.players[p].bg_rainbow = value as u8; }
+            }
+            SettingKey::AllBgSpd => {
+                for p in 0..2 { self.settings.lighting.players[p].bg_speed_ds = value as u16; }
+            }
+            SettingKey::AllFgMode => {
+                for p in 0..2 { self.settings.lighting.players[p].fg_mode = value as u8; }
+            }
+            SettingKey::AllFgRainbow => {
+                for p in 0..2 { self.settings.lighting.players[p].fg_rainbow = value as u8; }
+            }
+            SettingKey::AllFgSpd => {
+                for p in 0..2 { self.settings.lighting.players[p].fg_speed_ds = value as u16; }
+            }
+            SettingKey::AllFgStep => {
+                for p in 0..2 { self.settings.lighting.players[p].fg_step_ds = value as u16; }
+            }
+            SettingKey::AllFgSize => {
+                for p in 0..2 { self.settings.lighting.players[p].fg_px_per_group = value as u8; }
+            }
+            SettingKey::AllTrigMode => {
+                for p in 0..2 { self.settings.lighting.players[p].trig_mode = value as u8; }
+            }
+            SettingKey::AllTrigRainbow => {
+                for p in 0..2 { self.settings.lighting.players[p].trig_rainbow = value as u8; }
+            }
+            SettingKey::AllTrigFdIn => {
+                for p in 0..2 { self.settings.lighting.players[p].trig_fade_in_ms = value as u16; }
+            }
+            SettingKey::AllTrigFdOut => {
+                for p in 0..2 { self.settings.lighting.players[p].trig_fade_out_ms = value as u16; }
+            }
+            SettingKey::AllTrigSize => {
+                for p in 0..2 { self.settings.lighting.players[p].trig_width = value as u8; }
+            }
+            // Lighting — per-player
+            SettingKey::PlayerBgMode(p) => self.settings.lighting.players[p].bg_mode = value as u8,
+            SettingKey::PlayerBgRainbow(p) => self.settings.lighting.players[p].bg_rainbow = value as u8,
+            SettingKey::PlayerBgSpd(p) => self.settings.lighting.players[p].bg_speed_ds = value as u16,
+            SettingKey::PlayerFgMode(p) => self.settings.lighting.players[p].fg_mode = value as u8,
+            SettingKey::PlayerFgRainbow(p) => self.settings.lighting.players[p].fg_rainbow = value as u8,
+            SettingKey::PlayerFgSpd(p) => self.settings.lighting.players[p].fg_speed_ds = value as u16,
+            SettingKey::PlayerFgStep(p) => self.settings.lighting.players[p].fg_step_ds = value as u16,
+            SettingKey::PlayerFgSize(p) => self.settings.lighting.players[p].fg_px_per_group = value as u8,
+            SettingKey::PlayerTrigMode(p) => self.settings.lighting.players[p].trig_mode = value as u8,
+            SettingKey::PlayerTrigRainbow(p) => self.settings.lighting.players[p].trig_rainbow = value as u8,
+            SettingKey::PlayerTrigFdIn(p) => self.settings.lighting.players[p].trig_fade_in_ms = value as u16,
+            SettingKey::PlayerTrigFdOut(p) => self.settings.lighting.players[p].trig_fade_out_ms = value as u16,
+            SettingKey::PlayerTrigSize(p) => self.settings.lighting.players[p].trig_width = value as u8,
+            SettingKey::GlobalBrightness => self.settings.lighting.brightness = value as u8,
         }
         self.settings_changed = true;
         self.prompt_answered_since_change = false;

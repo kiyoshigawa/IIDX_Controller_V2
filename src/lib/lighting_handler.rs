@@ -11,6 +11,7 @@
 //! driven by an independent [`Animation`] with its own background, foreground,
 //! and trigger state.
 
+use crate::flash_storage::PlayerAnimConfig;
 use crate::led_strip::{LEDS_PER_SIDE, NUM_LEDS};
 use embedded_time::rate::Hertz;
 use lighting_controller::animations::Animatable;
@@ -61,6 +62,9 @@ pub struct LightingHandler {
 
     /// Frame rate used for duration → frame-count conversions.
     frame_rate: Hertz,
+
+    /// Shadow copy of per-player lighting config for on-the-fly trigger param construction.
+    player_cfg: [PlayerAnimConfig; 2],
 }
 
 impl LightingHandler {
@@ -101,6 +105,12 @@ impl LightingHandler {
             a2,
             brightness: DEFAULT_BRIGHTNESS,
             frame_rate,
+            player_cfg: [PlayerAnimConfig {
+                bg_mode: 0, bg_rainbow: 0, bg_subdivisions: 0, bg_speed_ds: 0,
+                fg_mode: 0, fg_rainbow: 0, fg_subdivisions: 0, fg_speed_ds: 0,
+                fg_step_ds: 0, fg_px_per_group: 0,
+                trig_mode: 0, trig_rainbow: 0, trig_fade_in_ms: 0, trig_fade_out_ms: 0, trig_width: 0,
+            }; 2],
         }
     }
 
@@ -163,38 +173,129 @@ impl LightingHandler {
         self.brightness = brightness;
     }
 
+    /// Apply per-player lighting config from flash settings.
+    pub fn apply_config(&mut self, cfg: &crate::flash_storage::LightingConfig) {
+        self.brightness = cfg.brightness;
+        self.player_cfg = cfg.players;
+        for (i, pcfg) in cfg.players.iter().enumerate() {
+            self.apply_player_config(i, pcfg);
+        }
+    }
+
+    fn apply_player_config(&mut self, player: usize, pcfg: &PlayerAnimConfig) {
+        let anim: &mut dyn Animatable = match player {
+            0 => &mut self.a1,
+            1 => &mut self.a2,
+            _ => return,
+        };
+
+        // BG mode
+        match pcfg.bg_mode {
+            0 => { // Rotate — FillRainbowRotate + Positive direction
+                anim.update_bg_mode(animations::background::Mode::FillRainbowRotate);
+                anim.update_bg_direction(animations::Direction::Positive);
+            }
+            1 => { // Follow — FillRainbowRotate + Positive direction
+                anim.update_bg_mode(animations::background::Mode::FillRainbowRotate);
+                anim.update_bg_direction(animations::Direction::Positive);
+            }
+            2 => anim.update_bg_mode(animations::background::Mode::Solid),
+            3 => anim.update_bg_mode(animations::background::Mode::SolidFade),
+            4 => anim.update_bg_mode(animations::background::Mode::NoBackground),
+            _ => {}
+        }
+
+        // BG rainbow & subdivisions
+        let bg_rainbow = crate::lighting_consts::RAINBOW_SLICES
+            .get(pcfg.bg_rainbow as usize)
+            .copied()
+            .unwrap_or(crate::lighting_consts::TWELVE_BIT_OKLCH_RAINBOW);
+        anim.update_bg_rainbow(bg_rainbow, animations::RainbowDir::Forward);
+        anim.update_bg_subdivisions(pcfg.bg_subdivisions as usize);
+
+        // BG speed
+        let bg_ns = (pcfg.bg_speed_ds as u64) * 100_000_000;
+        anim.update_bg_duration_ns(bg_ns, self.frame_rate);
+
+        // FG mode
+        match pcfg.fg_mode {
+            0 => anim.update_fg_mode(animations::foreground::Mode::NoForeground),
+            1 => anim.update_fg_mode(animations::foreground::Mode::MarqueeSolid),
+            2 => anim.update_fg_mode(animations::foreground::Mode::MarqueeSolidFixed),
+            3 => anim.update_fg_mode(animations::foreground::Mode::MarqueeFade),
+            4 => anim.update_fg_mode(animations::foreground::Mode::MarqueeFadeFixed),
+            5 => anim.update_fg_mode(animations::foreground::Mode::VUMeter),
+            _ => {}
+        }
+
+        // FG rainbow & subdivisions
+        let fg_rainbow = crate::lighting_consts::RAINBOW_SLICES
+            .get(pcfg.fg_rainbow as usize)
+            .copied()
+            .unwrap_or(crate::lighting_consts::TWELVE_BIT_OKLCH_RAINBOW);
+        anim.update_fg_rainbow(fg_rainbow, animations::RainbowDir::Forward);
+        anim.update_fg_subdivisions(pcfg.fg_subdivisions as usize);
+
+        // FG speed & step
+        let fg_ns = (pcfg.fg_speed_ds as u64) * 100_000_000;
+        anim.update_fg_duration_ns(fg_ns, self.frame_rate);
+        let step_ns = (pcfg.fg_step_ds as u64) * 100_000_000;
+        anim.update_fg_step_time_ns(step_ns, self.frame_rate);
+        anim.update_fg_pixels_per_pixel_group(pcfg.fg_px_per_group as usize);
+
+        // Trigger rainbows
+        let trig_rainbow = crate::lighting_consts::RAINBOW_SLICES
+            .get(pcfg.trig_rainbow as usize)
+            .copied()
+            .unwrap_or(crate::lighting_consts::TWELVE_BIT_OKLCH_RAINBOW);
+        anim.update_trig_incremental_rainbow(trig_rainbow, animations::RainbowDir::Forward);
+        anim.update_trig_fade_rainbow(trig_rainbow, animations::RainbowDir::Forward);
+    }
+
     /// Process a [`LightingEvent`] — called from the core1 loop when SIO FIFO
     /// data indicates an encoder position change or button press.
     pub fn handle_event(&mut self, event: LightingEvent) {
         match event {
             LightingEvent::EncoderMoved { player, count } => {
-                const STEPS_PER_REV: i32 = 2400;
-                let normalized = count.rem_euclid(STEPS_PER_REV);
-                let offset =
-                    ((normalized as u32 * (u16::MAX as u32)) / (STEPS_PER_REV as u32)) as u16;
-                match player {
-                    0 => self
-                        .a1
-                        .set_offset(animations::AnimationType::Background, offset),
-                    1 => self
-                        .a2
-                        .set_offset(animations::AnimationType::Background, offset),
-                    _ => {}
+                // In Rotate mode (bg_mode=0) the rainbow rotates independently.
+                // Only apply encoder offset in Follow mode (bg_mode=1).
+                if self.player_cfg.get(player).map(|c| c.bg_mode) == Some(1) {
+                    const STEPS_PER_REV: i32 = 2400;
+                    let normalized = count.rem_euclid(STEPS_PER_REV);
+                    let offset = ((normalized as u32 * (u16::MAX as u32)) / (STEPS_PER_REV as u32)) as u16;
+                    match player {
+                        0 => self.a1.set_offset(animations::AnimationType::Background, offset),
+                        1 => self.a2.set_offset(animations::AnimationType::Background, offset),
+                        _ => {}
+                    }
                 }
             }
             LightingEvent::ButtonPressed { player } => {
-                let params = animations::trigger::Parameters {
-                    mode: animations::trigger::Mode::ColorPulse,
-                    direction: animations::Direction::Stopped,
-                    fade_in_time_ns: 250_000_000,
-                    fade_out_time_ns: 500_000_000,
-                    starting_offset: 0,
-                    pixels_per_pixel_group: 3,
-                };
-                match player {
-                    0 => self.a1.trigger(&params, self.frame_rate),
-                    1 => self.a2.trigger(&params, self.frame_rate),
-                    _ => {}
+                if let Some(cfg) = self.player_cfg.get(player) {
+                    let params = animations::trigger::Parameters {
+                        mode: match cfg.trig_mode {
+                            1 => animations::trigger::Mode::ColorPulse,
+                            2 => animations::trigger::Mode::ColorPulseFade,
+                            3 => animations::trigger::Mode::ColorPulseRainbow,
+                            4 => animations::trigger::Mode::ColorShot,
+                            5 => animations::trigger::Mode::ColorShotFade,
+                            6 => animations::trigger::Mode::ColorShotRainbow,
+                            7 => animations::trigger::Mode::Flash,
+                            8 => animations::trigger::Mode::FlashFade,
+                            9 => animations::trigger::Mode::FlashRainbow,
+                            _ => animations::trigger::Mode::NoTrigger,
+                        },
+                        direction: animations::Direction::Stopped,
+                        fade_in_time_ns: (cfg.trig_fade_in_ms as u64) * 1_000_000,
+                        fade_out_time_ns: (cfg.trig_fade_out_ms as u64) * 1_000_000,
+                        starting_offset: 0,
+                        pixels_per_pixel_group: cfg.trig_width as usize,
+                    };
+                    match player {
+                        0 => self.a1.trigger(&params, self.frame_rate),
+                        1 => self.a2.trigger(&params, self.frame_rate),
+                        _ => {}
+                    }
                 }
             }
         }
