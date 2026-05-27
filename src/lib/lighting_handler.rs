@@ -13,7 +13,7 @@
 
 use crate::flash_storage::PlayerAnimConfig;
 use crate::led_strip::{LEDS_PER_SIDE, NUM_LEDS};
-use crate::NUM_PLAYERS;
+use crate::{NUM_PLAYERS, Player};
 use embedded_time::rate::Hertz;
 use lighting_controller::animations::Animatable;
 use lighting_controller::{self as lc, animations, utility};
@@ -183,7 +183,8 @@ impl LightingHandler {
         self.player_cfg = cfg.players;
         self.last_applied_cfg = *cfg;
         for (i, pcfg) in cfg.players.iter().enumerate() {
-            self.apply_player_config(i, pcfg);
+            let player = if i == 0 { Player::P1 } else { Player::P2 };
+            self.apply_player_config(player, pcfg);
         }
     }
 
@@ -195,11 +196,10 @@ impl LightingHandler {
         self.apply_config(cfg);
     }
 
-    fn apply_player_config(&mut self, player: usize, pcfg: &PlayerAnimConfig) {
+    fn apply_player_config(&mut self, player: Player, pcfg: &PlayerAnimConfig) {
         let anim: &mut dyn Animatable = match player {
-            0 => &mut self.a1,
-            1 => &mut self.a2,
-            _ => return,
+            Player::P1 => &mut self.a1,
+            Player::P2 => &mut self.a2,
         };
 
         // BG direction from config (0=Fwd, 1=Stop, 2=Rev), default Positive
@@ -216,7 +216,8 @@ impl LightingHandler {
         };
 
         match pcfg.bg_mode {
-            0 | 1 => { // Rotate or Follow — FillRainbowRotate with config direction
+            0 | 1 => {
+                // Rotate or Follow — FillRainbowRotate with config direction
                 anim.update_bg_mode(animations::background::Mode::FillRainbowRotate);
                 anim.update_bg_direction(bg_dir);
             }
@@ -287,22 +288,25 @@ impl LightingHandler {
             LightingEvent::EncoderMoved { player, count } => {
                 // In Rotate mode (bg_mode=0) the rainbow rotates independently.
                 // Only apply encoder offset in Follow mode (bg_mode=1).
-                if player >= NUM_PLAYERS || self.player_cfg[player].bg_mode != 1 {
+                if self.player_cfg[player as usize].bg_mode != 1 {
                     return;
                 }
                 const STEPS_PER_REV: i32 = 2400;
                 let normalized = count.rem_euclid(STEPS_PER_REV);
                 let offset = (normalized * (u16::MAX as i32)) / STEPS_PER_REV;
                 match player {
-                    0 => self.a1.set_offset(animations::AnimationType::Background, offset as u16),
-                    1 => self.a2.set_offset(animations::AnimationType::Background, offset as u16),
-                    _ => return
+                    Player::P1 => self
+                        .a1
+                        .set_offset(animations::AnimationType::Background, offset as u16),
+                    Player::P2 => self
+                        .a2
+                        .set_offset(animations::AnimationType::Background, offset as u16),
                 }
             }
             LightingEvent::DirectionChanged { player, direction } => {
                 // In Follow mode, reverse rotation to match wiki spin direction.
                 // Stopped is ignored so the animation keeps rotating in the last direction.
-                if player >= NUM_PLAYERS || self.player_cfg[player].bg_mode != 1 {
+                if self.player_cfg[player as usize].bg_mode != 1 {
                     return;
                 }
                 let dir = match direction {
@@ -311,20 +315,18 @@ impl LightingHandler {
                     crate::EncoderDirection::Stopped => return,
                 };
                 match player {
-                    0 => self.a1.update_bg_direction(dir),
-                    1 => self.a2.update_bg_direction(dir),
-                    _ => return
+                    Player::P1 => self.a1.update_bg_direction(dir),
+                    Player::P2 => self.a2.update_bg_direction(dir),
                 }
             }
             LightingEvent::ButtonPressed { player } => {
-                if player >= NUM_PLAYERS {
+                let p_idx = player as usize;
+                let cfg = &self.player_cfg[p_idx];
+                if cfg.trig_mode == 0 {
                     return;
                 }
-
-                let cfg = &self.player_cfg[player];
-                if cfg.trig_mode == 0 { return; }
                 // Trigger direction: config sets starting direction, toggles each fire
-                let dir = match (cfg.trig_dir, self.trigger_dir_toggle[player]) {
+                let dir = match (cfg.trig_dir, self.trigger_dir_toggle[p_idx]) {
                     (0, false) => animations::Direction::Positive,
                     (0, true) => animations::Direction::Negative,
                     (1, _) => animations::Direction::Stopped,
@@ -333,7 +335,7 @@ impl LightingHandler {
                     _ => animations::Direction::Positive,
                 };
                 if cfg.trig_dir != 1 {
-                    self.trigger_dir_toggle[player] = !self.trigger_dir_toggle[player];
+                    self.trigger_dir_toggle[p_idx] = !self.trigger_dir_toggle[p_idx];
                 }
                 // Trigger offset: Random, Center, or Top
                 let offset = match cfg.trig_offset {
@@ -360,8 +362,10 @@ impl LightingHandler {
                     starting_offset: offset,
                     pixels_per_pixel_group: cfg.trig_width as usize,
                 };
-                if player == 0 { self.a1.trigger(&params, self.frame_rate); }
-                else { self.a2.trigger(&params, self.frame_rate); }
+                match player {
+                    Player::P1 => self.a1.trigger(&params, self.frame_rate),
+                    Player::P2 => self.a2.trigger(&params, self.frame_rate),
+                }
             }
         }
     }
@@ -373,11 +377,15 @@ impl LightingHandler {
 
 /// Events forwarded to [`LightingHandler`] from the core1 loop in response
 /// to SIO FIFO input data or button press notifications.
+/// Events generated by the input handler to control the lighting system.
 pub enum LightingEvent {
-    /// Encoder position changed for the given player (0 = P1, 1 = P2).
-    EncoderMoved { player: usize, count: i32 },
+    /// Encoder position changed for the given player.
+    EncoderMoved { player: Player, count: i32 },
     /// Encoder spin direction changed.
-    DirectionChanged { player: usize, direction: crate::EncoderDirection },
+    DirectionChanged {
+        player: Player,
+        direction: crate::EncoderDirection,
+    },
     /// A gameplay or encoder-derived button was pressed.
-    ButtonPressed { player: usize },
+    ButtonPressed { player: Player },
 }

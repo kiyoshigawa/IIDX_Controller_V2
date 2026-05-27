@@ -8,12 +8,13 @@ use core::fmt::Write;
 
 use defmt::debug;
 use display_interface::WriteOnlyDataCommand;
+use strum::IntoEnumIterator;
 
 use crate::menu_handler::MenuHandler;
 use crate::menu_layout::{Commit, Editor, FmtBuf, SettingMeta};
 use crate::{
     BG_MODE_NAMES, ButtonCode, DIR_NAMES, FG_MODE_NAMES, FlashStoragePersistentMemory, NUM_BUTTONS,
-    NUM_ENCODERS, OFFSET_NAMES, RAINBOW_NAMES, TRIG_MODE_NAMES,
+    OFFSET_NAMES, Player, RAINBOW_NAMES, TRIG_MODE_NAMES,
 };
 
 // ── Setting key enums ─────────────────────────────────────────────
@@ -24,7 +25,7 @@ use crate::{
 pub(crate) enum ValueKey {
     AllButtonDebounce,
     ButtonDebounce(ButtonCode),
-    EncoderDebounce(usize),
+    EncoderDebounce(Player),
     // Lighting
     AllBgMode,
     AllBgRainbow,
@@ -44,37 +45,37 @@ pub(crate) enum ValueKey {
     AllTrigDir,
     AllTrigOffset,
     AllTrigDur,
-    PlayerBgMode(usize),
-    PlayerBgRainbow(usize),
-    PlayerBgSpd(usize),
-    PlayerBgSubdiv(usize),
-    PlayerFgMode(usize),
-    PlayerFgRainbow(usize),
-    PlayerFgSpd(usize),
-    PlayerFgSubdiv(usize),
-    PlayerFgStep(usize),
-    PlayerFgSize(usize),
-    PlayerTrigMode(usize),
-    PlayerTrigRainbow(usize),
-    PlayerTrigFdIn(usize),
-    PlayerTrigFdOut(usize),
-    PlayerTrigSize(usize),
-    PlayerTrigDir(usize),
-    PlayerTrigOffset(usize),
-    PlayerTrigDur(usize),
+    PlayerBgMode(Player),
+    PlayerBgRainbow(Player),
+    PlayerBgSpd(Player),
+    PlayerBgSubdiv(Player),
+    PlayerFgMode(Player),
+    PlayerFgRainbow(Player),
+    PlayerFgSpd(Player),
+    PlayerFgSubdiv(Player),
+    PlayerFgStep(Player),
+    PlayerFgSize(Player),
+    PlayerTrigMode(Player),
+    PlayerTrigRainbow(Player),
+    PlayerTrigFdIn(Player),
+    PlayerTrigFdOut(Player),
+    PlayerTrigSize(Player),
+    PlayerTrigDir(Player),
+    PlayerTrigOffset(Player),
+    PlayerTrigDur(Player),
     GlobalBrightness,
 }
 
 /// Keys identifying which setting a menu option edits.  Each field in the
 /// persistent config has both an `All*` variant (applies to both players)
-/// and a `Player*(usize)` variant (applies to one player).
+/// and a `Player*(Player)` variant (applies to one player).
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum SettingKey {
     AllButtonDebounce,
     ButtonDebounce(ButtonCode),
-    EncoderDebounce(usize),
-    EncoderStepThreshold(usize),
-    EncoderMoveTimeout(usize),
+    EncoderDebounce(Player),
+    EncoderStepThreshold(Player),
+    EncoderMoveTimeout(Player),
     // Lighting — "All" variants apply to both players
     AllBgMode,
     AllBgRainbow,
@@ -95,24 +96,24 @@ pub(crate) enum SettingKey {
     AllTrigOffset,
     AllTrigDur,
     // Lighting — per-player
-    PlayerBgMode(usize),
-    PlayerBgRainbow(usize),
-    PlayerBgSpd(usize),
-    PlayerBgSubdiv(usize),
-    PlayerFgMode(usize),
-    PlayerFgRainbow(usize),
-    PlayerFgSpd(usize),
-    PlayerFgSubdiv(usize),
-    PlayerFgStep(usize),
-    PlayerFgSize(usize),
-    PlayerTrigMode(usize),
-    PlayerTrigRainbow(usize),
-    PlayerTrigFdIn(usize),
-    PlayerTrigFdOut(usize),
-    PlayerTrigSize(usize),
-    PlayerTrigDir(usize),
-    PlayerTrigOffset(usize),
-    PlayerTrigDur(usize),
+    PlayerBgMode(Player),
+    PlayerBgRainbow(Player),
+    PlayerBgSpd(Player),
+    PlayerBgSubdiv(Player),
+    PlayerFgMode(Player),
+    PlayerFgRainbow(Player),
+    PlayerFgSpd(Player),
+    PlayerFgSubdiv(Player),
+    PlayerFgStep(Player),
+    PlayerFgSize(Player),
+    PlayerTrigMode(Player),
+    PlayerTrigRainbow(Player),
+    PlayerTrigFdIn(Player),
+    PlayerTrigFdOut(Player),
+    PlayerTrigSize(Player),
+    PlayerTrigDir(Player),
+    PlayerTrigOffset(Player),
+    PlayerTrigDur(Player),
     GlobalBrightness,
 }
 
@@ -248,31 +249,31 @@ impl SettingKey {
 pub(crate) enum FieldDescriptor {
     ButtonDebounce(usize),
     ButtonKey(usize),
-    EncoderKeyUp(usize),
-    EncoderKeyDown(usize),
-    EncoderDebounce(usize),
-    EncoderStepThreshold(usize),
-    EncoderMoveTimeout(usize),
+    EncoderKeyUp(Player),
+    EncoderKeyDown(Player),
+    EncoderDebounce(Player),
+    EncoderStepThreshold(Player),
+    EncoderMoveTimeout(Player),
     // Lighting
-    PlayerBgMode(usize),
-    PlayerBgRainbow(usize),
-    PlayerBgSpd(usize),
-    PlayerBgSubdiv(usize),
-    PlayerFgMode(usize),
-    PlayerFgRainbow(usize),
-    PlayerFgSpd(usize),
-    PlayerFgSubdiv(usize),
-    PlayerFgStep(usize),
-    PlayerFgSize(usize),
-    PlayerTrigMode(usize),
-    PlayerTrigRainbow(usize),
-    PlayerTrigFdIn(usize),
-    PlayerTrigFdOut(usize),
-    PlayerTrigSize(usize),
-    PlayerTrigDir(usize),
-    PlayerTrigOffset(usize),
-    PlayerTrigDur(usize),
-    PlayerBrightness(usize),
+    PlayerBgMode(Player),
+    PlayerBgRainbow(Player),
+    PlayerBgSpd(Player),
+    PlayerBgSubdiv(Player),
+    PlayerFgMode(Player),
+    PlayerFgRainbow(Player),
+    PlayerFgSpd(Player),
+    PlayerFgSubdiv(Player),
+    PlayerFgStep(Player),
+    PlayerFgSize(Player),
+    PlayerTrigMode(Player),
+    PlayerTrigRainbow(Player),
+    PlayerTrigFdIn(Player),
+    PlayerTrigFdOut(Player),
+    PlayerTrigSize(Player),
+    PlayerTrigDir(Player),
+    PlayerTrigOffset(Player),
+    PlayerTrigDur(Player),
+    PlayerBrightness(Player),
 }
 
 impl FieldDescriptor {
@@ -285,139 +286,82 @@ impl FieldDescriptor {
             Self::EncoderDebounce(_) => "Encoder Debounce",
             Self::EncoderStepThreshold(_) => "Encoder Threshold",
             Self::EncoderMoveTimeout(_) => "Encoder Timeout",
-            Self::PlayerBgMode(p) => {
-                if *p == 0 {
-                    "P1 BG"
-                } else {
-                    "P2 BG"
-                }
-            }
-            Self::PlayerFgMode(p) => {
-                if *p == 0 {
-                    "P1 FG"
-                } else {
-                    "P2 FG"
-                }
-            }
-            Self::PlayerTrigMode(p) => {
-                if *p == 0 {
-                    "P1 Trig"
-                } else {
-                    "P2 Trig"
-                }
-            }
-            Self::PlayerBrightness(p) => {
-                if *p == 0 {
-                    "P1 Bright"
-                } else {
-                    "P2 Bright"
-                }
-            }
-            Self::PlayerBgRainbow(p) => {
-                if *p == 0 {
-                    "P1 BgRnb"
-                } else {
-                    "P2 BgRnb"
-                }
-            }
-            Self::PlayerBgSpd(p) => {
-                if *p == 0 {
-                    "P1 BgSpd"
-                } else {
-                    "P2 BgSpd"
-                }
-            }
-            Self::PlayerBgSubdiv(p) => {
-                if *p == 0 {
-                    "P1 BgSub"
-                } else {
-                    "P2 BgSub"
-                }
-            }
-            Self::PlayerFgSubdiv(p) => {
-                if *p == 0 {
-                    "P1 FgSub"
-                } else {
-                    "P2 FgSub"
-                }
-            }
-            Self::PlayerFgRainbow(p) => {
-                if *p == 0 {
-                    "P1 FgRnb"
-                } else {
-                    "P2 FgRnb"
-                }
-            }
-            Self::PlayerFgSpd(p) => {
-                if *p == 0 {
-                    "P1 FgSpd"
-                } else {
-                    "P2 FgSpd"
-                }
-            }
-            Self::PlayerFgStep(p) => {
-                if *p == 0 {
-                    "P1 FgStp"
-                } else {
-                    "P2 FgStp"
-                }
-            }
-            Self::PlayerFgSize(p) => {
-                if *p == 0 {
-                    "P1 FgSz"
-                } else {
-                    "P2 FgSz"
-                }
-            }
-            Self::PlayerTrigRainbow(p) => {
-                if *p == 0 {
-                    "P1 TrRnb"
-                } else {
-                    "P2 TrRnb"
-                }
-            }
-            Self::PlayerTrigFdIn(p) => {
-                if *p == 0 {
-                    "P1 FdIn"
-                } else {
-                    "P2 FdIn"
-                }
-            }
-            Self::PlayerTrigFdOut(p) => {
-                if *p == 0 {
-                    "P1 FdOut"
-                } else {
-                    "P2 FdOut"
-                }
-            }
-            Self::PlayerTrigSize(p) => {
-                if *p == 0 {
-                    "P1 TrSz"
-                } else {
-                    "P2 TrSz"
-                }
-            }
-            Self::PlayerTrigDir(p) => {
-                if *p == 0 {
-                    "P1 TrDr"
-                } else {
-                    "P2 TrDr"
-                }
-            }
-            Self::PlayerTrigOffset(p) => {
-                if *p == 0 {
-                    "P1 TrOf"
-                } else {
-                    "P2 TrOf"
-                }
-            }
-            Self::PlayerTrigDur(p) => {
-                if *p == 0 {
-                    "P1 TrDu"
-                } else {
-                    "P2 TrDu"
-                }
-            }
+            Self::PlayerBgMode(p) => match p {
+                Player::P1 => "P1 BG",
+                Player::P2 => "P2 BG",
+            },
+            Self::PlayerFgMode(p) => match p {
+                Player::P1 => "P1 FG",
+                Player::P2 => "P2 FG",
+            },
+            Self::PlayerTrigMode(p) => match p {
+                Player::P1 => "P1 Trig",
+                Player::P2 => "P2 Trig",
+            },
+            Self::PlayerBrightness(p) => match p {
+                Player::P1 => "P1 Bright",
+                Player::P2 => "P2 Bright",
+            },
+            Self::PlayerBgRainbow(p) => match p {
+                Player::P1 => "P1 BgRnb",
+                Player::P2 => "P2 BgRnb",
+            },
+            Self::PlayerBgSpd(p) => match p {
+                Player::P1 => "P1 BgSpd",
+                Player::P2 => "P2 BgSpd",
+            },
+            Self::PlayerBgSubdiv(p) => match p {
+                Player::P1 => "P1 BgSub",
+                Player::P2 => "P2 BgSub",
+            },
+            Self::PlayerFgSubdiv(p) => match p {
+                Player::P1 => "P1 FgSub",
+                Player::P2 => "P2 FgSub",
+            },
+            Self::PlayerFgRainbow(p) => match p {
+                Player::P1 => "P1 FgRnb",
+                Player::P2 => "P2 FgRnb",
+            },
+            Self::PlayerFgSpd(p) => match p {
+                Player::P1 => "P1 FgSpd",
+                Player::P2 => "P2 FgSpd",
+            },
+            Self::PlayerFgStep(p) => match p {
+                Player::P1 => "P1 FgStp",
+                Player::P2 => "P2 FgStp",
+            },
+            Self::PlayerFgSize(p) => match p {
+                Player::P1 => "P1 FgSz",
+                Player::P2 => "P2 FgSz",
+            },
+            Self::PlayerTrigRainbow(p) => match p {
+                Player::P1 => "P1 TrRnb",
+                Player::P2 => "P2 TrRnb",
+            },
+            Self::PlayerTrigFdIn(p) => match p {
+                Player::P1 => "P1 FdIn",
+                Player::P2 => "P2 FdIn",
+            },
+            Self::PlayerTrigFdOut(p) => match p {
+                Player::P1 => "P1 FdOut",
+                Player::P2 => "P2 FdOut",
+            },
+            Self::PlayerTrigSize(p) => match p {
+                Player::P1 => "P1 TrSz",
+                Player::P2 => "P2 TrSz",
+            },
+            Self::PlayerTrigDir(p) => match p {
+                Player::P1 => "P1 TrDr",
+                Player::P2 => "P2 TrDr",
+            },
+            Self::PlayerTrigOffset(p) => match p {
+                Player::P1 => "P1 TrOf",
+                Player::P2 => "P2 TrOf",
+            },
+            Self::PlayerTrigDur(p) => match p {
+                Player::P1 => "P1 TrDu",
+                Player::P2 => "P2 TrDu",
+            },
         }
     }
 }
@@ -433,7 +377,7 @@ macro_rules! lighting_read_block {
                         return $self.settings.lighting.players[0].$field as u32;
                     }
                     SettingKey::$player_vk(p) => {
-                        return $self.settings.lighting.players[p].$field as u32;
+                        return $self.settings.lighting.players[p as usize].$field as u32;
                     }
                 )+
                 _ => {}
@@ -448,13 +392,13 @@ macro_rules! lighting_write_block {
             match $key {
                 $(
                     SettingKey::$all_vk => {
-                        for p in 0..2 {
-                            $self.settings.lighting.players[p].$field = $value as $ty;
+                        for p in $crate::Player::iter() {
+                            $self.settings.lighting.players[p as usize].$field = $value as $ty;
                         }
                         return;
                     }
                     SettingKey::$player_vk(p) => {
-                        $self.settings.lighting.players[p].$field = $value as $ty;
+                        $self.settings.lighting.players[p as usize].$field = $value as $ty;
                         return;
                     }
                 )+
@@ -469,8 +413,8 @@ macro_rules! lighting_for_each_check {
      [$([$player_vk:ident, $field:ident]),+ $(,)?]) => {
         $(
             {
-                let cur = $settings.lighting.players[$p].$field as u64;
-                let def = $defaults.lighting.players[$p].$field as u64;
+                let cur = $settings.lighting.players[$p as usize].$field as u64;
+                let def = $defaults.lighting.players[$p as usize].$field as u64;
                 if cur != def {
                     if !$f(FieldDescriptor::$player_vk($p), cur, def) {
                         return $count + 1;
@@ -485,12 +429,12 @@ macro_rules! lighting_for_each_check {
 macro_rules! lighting_reset_checks {
     ($self:ident, $p:ident, $idx:ident, $defaults:ident, $target_idx:ident, [$([$player_vk:ident, $field:ident]),+ $(,)?]) => {
         $(
-            if $self.settings.lighting.players[$p].$field
-                != $defaults.lighting.players[$p].$field
+            if $self.settings.lighting.players[$p as usize].$field
+                != $defaults.lighting.players[$p as usize].$field
             {
                 if $idx == $target_idx {
                     let key = SettingKey::$player_vk($p);
-                    $self.write_setting(key, $defaults.lighting.players[$p].$field as u32);
+                    $self.write_setting(key, $defaults.lighting.players[$p as usize].$field as u32);
                     return;
                 }
                 $idx += 1;
@@ -538,36 +482,36 @@ pub(crate) fn for_each_changed_field(
             FieldDescriptor::ButtonKey(b)
         );
     }
-    for e in 0..NUM_ENCODERS {
+    for e in Player::iter() {
         check!(
-            settings.encoders[e].key_up,
-            defaults.encoders[e].key_up,
+            settings.encoders[e as usize].key_up,
+            defaults.encoders[e as usize].key_up,
             FieldDescriptor::EncoderKeyUp(e)
         );
         check!(
-            settings.encoders[e].key_down,
-            defaults.encoders[e].key_down,
+            settings.encoders[e as usize].key_down,
+            defaults.encoders[e as usize].key_down,
             FieldDescriptor::EncoderKeyDown(e)
         );
         check!(
-            settings.encoders[e].debounce_ticks,
-            defaults.encoders[e].debounce_ticks,
+            settings.encoders[e as usize].debounce_ticks,
+            defaults.encoders[e as usize].debounce_ticks,
             FieldDescriptor::EncoderDebounce(e)
         );
         check!(
-            settings.encoders[e].step_threshold,
-            defaults.encoders[e].step_threshold,
+            settings.encoders[e as usize].step_threshold,
+            defaults.encoders[e as usize].step_threshold,
             FieldDescriptor::EncoderStepThreshold(e)
         );
         check!(
-            settings.encoders[e].move_timeout_ticks,
-            defaults.encoders[e].move_timeout_ticks,
+            settings.encoders[e as usize].move_timeout_ticks,
+            defaults.encoders[e as usize].move_timeout_ticks,
             FieldDescriptor::EncoderMoveTimeout(e)
         );
     }
 
     // Lighting per-player fields
-    for p in 0..2_usize {
+    for p in Player::iter() {
         lighting_for_each_check!(
             p,
             settings,
@@ -600,7 +544,7 @@ pub(crate) fn for_each_changed_field(
     check!(
         settings.lighting.brightness,
         defaults.lighting.brightness,
-        FieldDescriptor::PlayerBrightness(0)
+        FieldDescriptor::PlayerBrightness(Player::P1)
     );
 
     count
@@ -618,7 +562,9 @@ pub(crate) fn build_editor(
         SettingKey::AllBgMode | SettingKey::PlayerBgMode(_) => {
             let current = match key {
                 SettingKey::AllBgMode => settings.lighting.players[0].bg_mode as usize,
-                SettingKey::PlayerBgMode(p) => settings.lighting.players[p].bg_mode as usize,
+                SettingKey::PlayerBgMode(p) => {
+                    settings.lighting.players[p as usize].bg_mode as usize
+                }
                 _ => 0,
             };
             (
@@ -632,7 +578,9 @@ pub(crate) fn build_editor(
         SettingKey::AllBgRainbow | SettingKey::PlayerBgRainbow(_) => {
             let current = match key {
                 SettingKey::AllBgRainbow => settings.lighting.players[0].bg_rainbow as usize,
-                SettingKey::PlayerBgRainbow(p) => settings.lighting.players[p].bg_rainbow as usize,
+                SettingKey::PlayerBgRainbow(p) => {
+                    settings.lighting.players[p as usize].bg_rainbow as usize
+                }
                 _ => 0,
             };
             (
@@ -646,7 +594,9 @@ pub(crate) fn build_editor(
         SettingKey::AllFgMode | SettingKey::PlayerFgMode(_) => {
             let current = match key {
                 SettingKey::AllFgMode => settings.lighting.players[0].fg_mode as usize,
-                SettingKey::PlayerFgMode(p) => settings.lighting.players[p].fg_mode as usize,
+                SettingKey::PlayerFgMode(p) => {
+                    settings.lighting.players[p as usize].fg_mode as usize
+                }
                 _ => 0,
             };
             (
@@ -660,7 +610,9 @@ pub(crate) fn build_editor(
         SettingKey::AllFgRainbow | SettingKey::PlayerFgRainbow(_) => {
             let current = match key {
                 SettingKey::AllFgRainbow => settings.lighting.players[0].fg_rainbow as usize,
-                SettingKey::PlayerFgRainbow(p) => settings.lighting.players[p].fg_rainbow as usize,
+                SettingKey::PlayerFgRainbow(p) => {
+                    settings.lighting.players[p as usize].fg_rainbow as usize
+                }
                 _ => 0,
             };
             (
@@ -674,7 +626,9 @@ pub(crate) fn build_editor(
         SettingKey::AllTrigMode | SettingKey::PlayerTrigMode(_) => {
             let current = match key {
                 SettingKey::AllTrigMode => settings.lighting.players[0].trig_mode as usize,
-                SettingKey::PlayerTrigMode(p) => settings.lighting.players[p].trig_mode as usize,
+                SettingKey::PlayerTrigMode(p) => {
+                    settings.lighting.players[p as usize].trig_mode as usize
+                }
                 _ => 0,
             };
             (
@@ -689,7 +643,7 @@ pub(crate) fn build_editor(
             let current = match key {
                 SettingKey::AllTrigRainbow => settings.lighting.players[0].trig_rainbow as usize,
                 SettingKey::PlayerTrigRainbow(p) => {
-                    settings.lighting.players[p].trig_rainbow as usize
+                    settings.lighting.players[p as usize].trig_rainbow as usize
                 }
                 _ => 0,
             };
@@ -704,7 +658,9 @@ pub(crate) fn build_editor(
         SettingKey::AllTrigDir | SettingKey::PlayerTrigDir(_) => {
             let current = match key {
                 SettingKey::AllTrigDir => settings.lighting.players[0].trig_dir as usize,
-                SettingKey::PlayerTrigDir(p) => settings.lighting.players[p].trig_dir as usize,
+                SettingKey::PlayerTrigDir(p) => {
+                    settings.lighting.players[p as usize].trig_dir as usize
+                }
                 _ => 0,
             };
             (
@@ -719,7 +675,7 @@ pub(crate) fn build_editor(
             let current = match key {
                 SettingKey::AllTrigOffset => settings.lighting.players[0].trig_offset as usize,
                 SettingKey::PlayerTrigOffset(p) => {
-                    settings.lighting.players[p].trig_offset as usize
+                    settings.lighting.players[p as usize].trig_offset as usize
                 }
                 _ => 0,
             };
@@ -739,41 +695,55 @@ pub(crate) fn build_editor(
                 SettingKey::ButtonDebounce(code) => {
                     settings.buttons[code as usize].debounce_ticks as u32
                 }
-                SettingKey::EncoderDebounce(idx) => settings.encoders[idx].debounce_ticks as u32,
-                SettingKey::EncoderStepThreshold(idx) => {
-                    settings.encoders[idx].step_threshold as u32
+                SettingKey::EncoderDebounce(p) => {
+                    settings.encoders[p as usize].debounce_ticks as u32
                 }
-                SettingKey::EncoderMoveTimeout(idx) => {
-                    settings.encoders[idx].move_timeout_ticks as u32
+                SettingKey::EncoderStepThreshold(p) => {
+                    settings.encoders[p as usize].step_threshold as u32
+                }
+                SettingKey::EncoderMoveTimeout(p) => {
+                    settings.encoders[p as usize].move_timeout_ticks as u32
                 }
                 SettingKey::AllBgSpd => settings.lighting.players[0].bg_speed_ds as u32,
-                SettingKey::PlayerBgSpd(p) => settings.lighting.players[p].bg_speed_ds as u32,
+                SettingKey::PlayerBgSpd(p) => {
+                    settings.lighting.players[p as usize].bg_speed_ds as u32
+                }
                 SettingKey::AllBgSubdiv => settings.lighting.players[0].bg_subdivisions as u32,
                 SettingKey::PlayerBgSubdiv(p) => {
-                    settings.lighting.players[p].bg_subdivisions as u32
+                    settings.lighting.players[p as usize].bg_subdivisions as u32
                 }
                 SettingKey::AllFgSubdiv => settings.lighting.players[0].fg_subdivisions as u32,
                 SettingKey::PlayerFgSubdiv(p) => {
-                    settings.lighting.players[p].fg_subdivisions as u32
+                    settings.lighting.players[p as usize].fg_subdivisions as u32
                 }
                 SettingKey::AllFgSpd => settings.lighting.players[0].fg_speed_ds as u32,
-                SettingKey::PlayerFgSpd(p) => settings.lighting.players[p].fg_speed_ds as u32,
+                SettingKey::PlayerFgSpd(p) => {
+                    settings.lighting.players[p as usize].fg_speed_ds as u32
+                }
                 SettingKey::AllFgStep => settings.lighting.players[0].fg_step_ds as u32,
-                SettingKey::PlayerFgStep(p) => settings.lighting.players[p].fg_step_ds as u32,
+                SettingKey::PlayerFgStep(p) => {
+                    settings.lighting.players[p as usize].fg_step_ds as u32
+                }
                 SettingKey::AllFgSize => settings.lighting.players[0].fg_px_per_group as u32,
-                SettingKey::PlayerFgSize(p) => settings.lighting.players[p].fg_px_per_group as u32,
+                SettingKey::PlayerFgSize(p) => {
+                    settings.lighting.players[p as usize].fg_px_per_group as u32
+                }
                 SettingKey::AllTrigFdIn => settings.lighting.players[0].trig_fade_in_ms as u32,
                 SettingKey::PlayerTrigFdIn(p) => {
-                    settings.lighting.players[p].trig_fade_in_ms as u32
+                    settings.lighting.players[p as usize].trig_fade_in_ms as u32
                 }
                 SettingKey::AllTrigFdOut => settings.lighting.players[0].trig_fade_out_ms as u32,
                 SettingKey::PlayerTrigFdOut(p) => {
-                    settings.lighting.players[p].trig_fade_out_ms as u32
+                    settings.lighting.players[p as usize].trig_fade_out_ms as u32
                 }
                 SettingKey::AllTrigSize => settings.lighting.players[0].trig_width as u32,
-                SettingKey::PlayerTrigSize(p) => settings.lighting.players[p].trig_width as u32,
+                SettingKey::PlayerTrigSize(p) => {
+                    settings.lighting.players[p as usize].trig_width as u32
+                }
                 SettingKey::AllTrigDur => settings.lighting.players[0].trig_dur_s as u32,
-                SettingKey::PlayerTrigDur(p) => settings.lighting.players[p].trig_dur_s as u32,
+                SettingKey::PlayerTrigDur(p) => {
+                    settings.lighting.players[p as usize].trig_dur_s as u32
+                }
                 SettingKey::GlobalBrightness => settings.lighting.brightness as u32,
                 _ => 0,
             };
@@ -950,7 +920,7 @@ pub(crate) fn key_name(key: u8) -> &'static str {
 /// Encoder wiki-editing state.
 #[derive(Clone, Copy)]
 pub(crate) struct WikiEditState {
-    pub(crate) encoder: usize,
+    pub(crate) encoder: Player,
     pub(crate) selected: usize,
     pub(crate) editing: bool,
     pub(crate) working_threshold: u32,
@@ -991,12 +961,14 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             SettingKey::ButtonDebounce(code) => {
                 self.settings.buttons[code as usize].debounce_ticks as u32
             }
-            SettingKey::EncoderDebounce(idx) => self.settings.encoders[idx].debounce_ticks as u32,
-            SettingKey::EncoderStepThreshold(idx) => {
-                self.settings.encoders[idx].step_threshold as u32
+            SettingKey::EncoderDebounce(p) => {
+                self.settings.encoders[p as usize].debounce_ticks as u32
             }
-            SettingKey::EncoderMoveTimeout(idx) => {
-                self.settings.encoders[idx].move_timeout_ticks as u32
+            SettingKey::EncoderStepThreshold(p) => {
+                self.settings.encoders[p as usize].step_threshold as u32
+            }
+            SettingKey::EncoderMoveTimeout(p) => {
+                self.settings.encoders[p as usize].move_timeout_ticks as u32
             }
             SettingKey::GlobalBrightness => self.settings.lighting.brightness as u32,
             _ => {
@@ -1045,14 +1017,14 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             SettingKey::ButtonDebounce(code) => {
                 self.settings.buttons[code as usize].debounce_ticks = value as u64;
             }
-            SettingKey::EncoderDebounce(idx) => {
-                self.settings.encoders[idx].debounce_ticks = value as u64;
+            SettingKey::EncoderDebounce(p) => {
+                self.settings.encoders[p as usize].debounce_ticks = value as u64;
             }
-            SettingKey::EncoderStepThreshold(idx) => {
-                self.settings.encoders[idx].step_threshold = value as i32;
+            SettingKey::EncoderStepThreshold(p) => {
+                self.settings.encoders[p as usize].step_threshold = value as i32;
             }
-            SettingKey::EncoderMoveTimeout(idx) => {
-                self.settings.encoders[idx].move_timeout_ticks = value as u64;
+            SettingKey::EncoderMoveTimeout(p) => {
+                self.settings.encoders[p as usize].move_timeout_ticks = value as u64;
             }
             SettingKey::GlobalBrightness => self.settings.lighting.brightness = value as u8,
             _ => unreachable!(),
@@ -1066,10 +1038,10 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             self.settings.buttons[idx].key
         } else {
             match code {
-                ButtonCode::P1Positive => self.settings.encoders[0].key_up,
-                ButtonCode::P1Negative => self.settings.encoders[0].key_down,
-                ButtonCode::P2Positive => self.settings.encoders[1].key_up,
-                ButtonCode::P2Negative => self.settings.encoders[1].key_down,
+                ButtonCode::P1Positive => self.settings.encoders[Player::P1 as usize].key_up,
+                ButtonCode::P1Negative => self.settings.encoders[Player::P1 as usize].key_down,
+                ButtonCode::P2Positive => self.settings.encoders[Player::P2 as usize].key_up,
+                ButtonCode::P2Negative => self.settings.encoders[Player::P2 as usize].key_down,
                 _ => 0,
             }
         }
@@ -1082,10 +1054,14 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             self.settings.buttons[idx].key = key;
         } else {
             match code {
-                ButtonCode::P1Positive => self.settings.encoders[0].key_up = key,
-                ButtonCode::P1Negative => self.settings.encoders[0].key_down = key,
-                ButtonCode::P2Positive => self.settings.encoders[1].key_up = key,
-                ButtonCode::P2Negative => self.settings.encoders[1].key_down = key,
+                ButtonCode::P1Positive => self.settings.encoders[Player::P1 as usize].key_up = key,
+                ButtonCode::P1Negative => {
+                    self.settings.encoders[Player::P1 as usize].key_down = key
+                }
+                ButtonCode::P2Positive => self.settings.encoders[Player::P2 as usize].key_up = key,
+                ButtonCode::P2Negative => {
+                    self.settings.encoders[Player::P2 as usize].key_down = key
+                }
                 _ => {}
             }
         }
@@ -1131,61 +1107,63 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 idx += 1;
             }
         }
-        for e in 0..NUM_ENCODERS {
-            if self.settings.encoders[e].key_up != defaults.encoders[e].key_up {
+        for e in Player::iter() {
+            let e_idx = e as usize;
+            if self.settings.encoders[e_idx].key_up != defaults.encoders[e_idx].key_up {
                 if idx == target_idx {
-                    let code = if e == 0 {
-                        ButtonCode::P1Positive
-                    } else {
-                        ButtonCode::P2Positive
+                    let code = match e {
+                        Player::P1 => ButtonCode::P1Positive,
+                        Player::P2 => ButtonCode::P2Positive,
                     };
-                    self.write_key_binding(code, defaults.encoders[e].key_up);
+                    self.write_key_binding(code, defaults.encoders[e_idx].key_up);
                     return;
                 }
                 idx += 1;
             }
-            // ... encoder key_down, debounce, threshold, timeout (same structure) ...
-            if self.settings.encoders[e].key_down != defaults.encoders[e].key_down {
+            if self.settings.encoders[e_idx].key_down != defaults.encoders[e_idx].key_down {
                 if idx == target_idx {
-                    let code = if e == 0 {
-                        ButtonCode::P1Negative
-                    } else {
-                        ButtonCode::P2Negative
+                    let code = match e {
+                        Player::P1 => ButtonCode::P1Negative,
+                        Player::P2 => ButtonCode::P2Negative,
                     };
-                    self.write_key_binding(code, defaults.encoders[e].key_down);
+                    self.write_key_binding(code, defaults.encoders[e_idx].key_down);
                     return;
                 }
                 idx += 1;
             }
-            if self.settings.encoders[e].debounce_ticks != defaults.encoders[e].debounce_ticks {
+            if self.settings.encoders[e_idx].debounce_ticks
+                != defaults.encoders[e_idx].debounce_ticks
+            {
                 if idx == target_idx {
                     let key = SettingKey::EncoderDebounce(e);
-                    self.write_setting(key, defaults.encoders[e].debounce_ticks as u32);
+                    self.write_setting(key, defaults.encoders[e_idx].debounce_ticks as u32);
                     return;
                 }
                 idx += 1;
             }
-            if self.settings.encoders[e].step_threshold != defaults.encoders[e].step_threshold {
+            if self.settings.encoders[e_idx].step_threshold
+                != defaults.encoders[e_idx].step_threshold
+            {
                 if idx == target_idx {
                     let key = SettingKey::EncoderStepThreshold(e);
-                    self.write_setting(key, defaults.encoders[e].step_threshold as u32);
+                    self.write_setting(key, defaults.encoders[e_idx].step_threshold as u32);
                     return;
                 }
                 idx += 1;
             }
-            if self.settings.encoders[e].move_timeout_ticks
-                != defaults.encoders[e].move_timeout_ticks
+            if self.settings.encoders[e_idx].move_timeout_ticks
+                != defaults.encoders[e_idx].move_timeout_ticks
             {
                 if idx == target_idx {
                     let key = SettingKey::EncoderMoveTimeout(e);
-                    self.write_setting(key, defaults.encoders[e].move_timeout_ticks as u32);
+                    self.write_setting(key, defaults.encoders[e_idx].move_timeout_ticks as u32);
                     return;
                 }
                 idx += 1;
             }
         }
         // Lighting fields
-        for p in 0..2 {
+        for p in Player::iter() {
             lighting_reset_checks!(
                 self,
                 p,
@@ -1257,99 +1235,195 @@ pub(crate) fn format_change_item(
                 write!(value_buf, "{}", key_name(cur as u8)).ok();
             }
             FieldDescriptor::EncoderKeyUp(e) => {
-                write!(label_buf, "P{} Positive Key", e + 1).ok();
+                let n = match e {
+                    Player::P1 => 1,
+                    Player::P2 => 2,
+                };
+                write!(label_buf, "P{} Positive Key", n).ok();
                 write!(value_buf, "{}", key_name(cur as u8)).ok();
             }
             FieldDescriptor::EncoderKeyDown(e) => {
-                write!(label_buf, "P{} Negative Key", e + 1).ok();
+                let n = match e {
+                    Player::P1 => 1,
+                    Player::P2 => 2,
+                };
+                write!(label_buf, "P{} Negative Key", n).ok();
                 write!(value_buf, "{}", key_name(cur as u8)).ok();
             }
             FieldDescriptor::EncoderDebounce(e) => {
-                write!(label_buf, "P{} Enc Debounce", e + 1).ok();
+                let n = match e {
+                    Player::P1 => 1,
+                    Player::P2 => 2,
+                };
+                write!(label_buf, "P{} Enc Debounce", n).ok();
                 write!(value_buf, "{} ms", cur / 1_000).ok();
             }
             FieldDescriptor::EncoderStepThreshold(e) => {
-                write!(label_buf, "P{} Threshold", e + 1).ok();
+                let n = match e {
+                    Player::P1 => 1,
+                    Player::P2 => 2,
+                };
+                write!(label_buf, "P{} Threshold", n).ok();
                 write!(value_buf, "{} Steps", cur).ok();
             }
             FieldDescriptor::EncoderMoveTimeout(e) => {
-                write!(label_buf, "P{} Timeout", e + 1).ok();
+                let n = match e {
+                    Player::P1 => 1,
+                    Player::P2 => 2,
+                };
+                write!(label_buf, "P{} Timeout", n).ok();
                 write!(value_buf, "{} ms", cur / 1_000).ok();
             }
             FieldDescriptor::PlayerBgMode(p) => {
-                write!(label_buf, "P{} BG Mode", p + 1).ok();
+                let n = match p {
+                    Player::P1 => 1,
+                    Player::P2 => 2,
+                };
+                write!(label_buf, "P{} BG Mode", n).ok();
                 write!(value_buf, "{}", BG_MODE_NAMES[cur as usize]).ok();
             }
             FieldDescriptor::PlayerBgRainbow(p) => {
-                write!(label_buf, "P{} BG Rainbow", p + 1).ok();
+                let n = match p {
+                    Player::P1 => 1,
+                    Player::P2 => 2,
+                };
+                write!(label_buf, "P{} BG Rainbow", n).ok();
                 write!(value_buf, "{}", RAINBOW_NAMES[cur as usize]).ok();
             }
             FieldDescriptor::PlayerBgSpd(p) => {
-                write!(label_buf, "P{} BG Speed", p + 1).ok();
+                let n = match p {
+                    Player::P1 => 1,
+                    Player::P2 => 2,
+                };
+                write!(label_buf, "P{} BG Speed", n).ok();
                 write!(value_buf, "{} s", cur / 10).ok();
             }
             FieldDescriptor::PlayerBgSubdiv(p) => {
-                write!(label_buf, "P{} BG Subdiv", p + 1).ok();
+                let n = match p {
+                    Player::P1 => 1,
+                    Player::P2 => 2,
+                };
+                write!(label_buf, "P{} BG Subdiv", n).ok();
                 write!(value_buf, "{}", cur).ok();
             }
             FieldDescriptor::PlayerFgMode(p) => {
-                write!(label_buf, "P{} FG Mode", p + 1).ok();
+                let n = match p {
+                    Player::P1 => 1,
+                    Player::P2 => 2,
+                };
+                write!(label_buf, "P{} FG Mode", n).ok();
                 write!(value_buf, "{}", FG_MODE_NAMES[cur as usize]).ok();
             }
             FieldDescriptor::PlayerFgRainbow(p) => {
-                write!(label_buf, "P{} FG Rainbow", p + 1).ok();
+                let n = match p {
+                    Player::P1 => 1,
+                    Player::P2 => 2,
+                };
+                write!(label_buf, "P{} FG Rainbow", n).ok();
                 write!(value_buf, "{}", RAINBOW_NAMES[cur as usize]).ok();
             }
             FieldDescriptor::PlayerFgSpd(p) => {
-                write!(label_buf, "P{} FG Speed", p + 1).ok();
+                let n = match p {
+                    Player::P1 => 1,
+                    Player::P2 => 2,
+                };
+                write!(label_buf, "P{} FG Speed", n).ok();
                 write!(value_buf, "{} s", cur / 10).ok();
             }
             FieldDescriptor::PlayerFgSubdiv(p) => {
-                write!(label_buf, "P{} FG Subdiv", p + 1).ok();
+                let n = match p {
+                    Player::P1 => 1,
+                    Player::P2 => 2,
+                };
+                write!(label_buf, "P{} FG Subdiv", n).ok();
                 write!(value_buf, "{}", cur).ok();
             }
             FieldDescriptor::PlayerFgStep(p) => {
-                write!(label_buf, "P{} FG Step", p + 1).ok();
+                let n = match p {
+                    Player::P1 => 1,
+                    Player::P2 => 2,
+                };
+                write!(label_buf, "P{} FG Step", n).ok();
                 write!(value_buf, "{} s", cur / 10).ok();
             }
             FieldDescriptor::PlayerFgSize(p) => {
-                write!(label_buf, "P{} FG Size", p + 1).ok();
+                let n = match p {
+                    Player::P1 => 1,
+                    Player::P2 => 2,
+                };
+                write!(label_buf, "P{} FG Size", n).ok();
                 write!(value_buf, "{} px", cur).ok();
             }
             FieldDescriptor::PlayerTrigMode(p) => {
-                write!(label_buf, "P{} Trig Mode", p + 1).ok();
+                let n = match p {
+                    Player::P1 => 1,
+                    Player::P2 => 2,
+                };
+                write!(label_buf, "P{} Trig Mode", n).ok();
                 write!(value_buf, "{}", TRIG_MODE_NAMES[cur as usize]).ok();
             }
             FieldDescriptor::PlayerTrigRainbow(p) => {
-                write!(label_buf, "P{} Trig Rainbow", p + 1).ok();
+                let n = match p {
+                    Player::P1 => 1,
+                    Player::P2 => 2,
+                };
+                write!(label_buf, "P{} Trig Rainbow", n).ok();
                 write!(value_buf, "{}", RAINBOW_NAMES[cur as usize]).ok();
             }
             FieldDescriptor::PlayerTrigFdIn(p) => {
-                write!(label_buf, "P{} Fade In", p + 1).ok();
+                let n = match p {
+                    Player::P1 => 1,
+                    Player::P2 => 2,
+                };
+                write!(label_buf, "P{} Fade In", n).ok();
                 write!(value_buf, "{} ms", cur).ok();
             }
             FieldDescriptor::PlayerTrigFdOut(p) => {
-                write!(label_buf, "P{} Fade Out", p + 1).ok();
+                let n = match p {
+                    Player::P1 => 1,
+                    Player::P2 => 2,
+                };
+                write!(label_buf, "P{} Fade Out", n).ok();
                 write!(value_buf, "{} ms", cur).ok();
             }
             FieldDescriptor::PlayerTrigSize(p) => {
-                write!(label_buf, "P{} Trig Size", p + 1).ok();
+                let n = match p {
+                    Player::P1 => 1,
+                    Player::P2 => 2,
+                };
+                write!(label_buf, "P{} Trig Size", n).ok();
                 write!(value_buf, "{} px", cur).ok();
             }
             FieldDescriptor::PlayerTrigDir(p) => {
-                write!(label_buf, "P{} Trig Dir", p + 1).ok();
+                let n = match p {
+                    Player::P1 => 1,
+                    Player::P2 => 2,
+                };
+                write!(label_buf, "P{} Trig Dir", n).ok();
                 write!(value_buf, "{}", DIR_NAMES[cur as usize]).ok();
             }
             FieldDescriptor::PlayerTrigOffset(p) => {
-                write!(label_buf, "P{} Trig Off", p + 1).ok();
+                let n = match p {
+                    Player::P1 => 1,
+                    Player::P2 => 2,
+                };
+                write!(label_buf, "P{} Trig Off", n).ok();
                 write!(value_buf, "{}", OFFSET_NAMES[cur as usize]).ok();
             }
             FieldDescriptor::PlayerTrigDur(p) => {
-                write!(label_buf, "P{} Trig Cycle", p + 1).ok();
+                let n = match p {
+                    Player::P1 => 1,
+                    Player::P2 => 2,
+                };
+                write!(label_buf, "P{} Trig Cycle", n).ok();
                 write!(value_buf, "{} s", cur).ok();
             }
             FieldDescriptor::PlayerBrightness(p) => {
-                write!(label_buf, "P{} Brightness", p + 1).ok();
+                let n = match p {
+                    Player::P1 => 1,
+                    Player::P2 => 2,
+                };
+                write!(label_buf, "P{} Brightness", n).ok();
                 write!(value_buf, "{}", cur).ok();
             }
         }

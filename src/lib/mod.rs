@@ -10,6 +10,15 @@ use ssd1306::{Ssd1306, mode::BufferedGraphicsMode, prelude::*};
 use strum::EnumIter;
 use usbd_human_interface_device::page::Keyboard;
 
+/// Identifies which of the two players/sides.
+#[repr(usize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, EnumIter)]
+pub enum Player {
+    #[default]
+    P1 = 0,
+    P2 = 1,
+}
+
 pub mod flash_storage;
 pub mod input_handler;
 pub mod led_strip;

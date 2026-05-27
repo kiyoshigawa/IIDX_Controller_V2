@@ -7,7 +7,7 @@
 use crate::lighting_handler::{LightingEvent, LightingHandler};
 use crate::menu_handler::MenuHandler;
 use crate::menu_layout::MenuEvents;
-use crate::{ButtonCode, EncoderDirection};
+use crate::{ButtonCode, EncoderDirection, Player};
 use defmt::debug;
 use display_interface::WriteOnlyDataCommand;
 use strum::IntoEnumIterator;
@@ -225,14 +225,14 @@ impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
         if self.encoder_p1_count != self.last_encoder_p1_count {
             self.last_encoder_p1_count = self.encoder_p1_count;
             lighting_handler.handle_event(LightingEvent::EncoderMoved {
-                player: 0,
+                player: Player::P1,
                 count: self.encoder_p1_count,
             });
         }
         if self.encoder_p2_count != self.last_encoder_p2_count {
             self.last_encoder_p2_count = self.encoder_p2_count;
             lighting_handler.handle_event(LightingEvent::EncoderMoved {
-                player: 1,
+                player: Player::P2,
                 count: self.encoder_p2_count,
             });
         }
@@ -241,14 +241,14 @@ impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
         if self.encoder_p1_direction != self.last_encoder_p1_direction {
             self.last_encoder_p1_direction = self.encoder_p1_direction;
             lighting_handler.handle_event(LightingEvent::DirectionChanged {
-                player: 0,
+                player: Player::P1,
                 direction: self.encoder_p1_direction,
             });
         }
         if self.encoder_p2_direction != self.last_encoder_p2_direction {
             self.last_encoder_p2_direction = self.encoder_p2_direction;
             lighting_handler.handle_event(LightingEvent::DirectionChanged {
-                player: 1,
+                player: Player::P2,
                 direction: self.encoder_p2_direction,
             });
         }
@@ -263,14 +263,14 @@ impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
         // P1 gameplay (codes 0..=6) + encoder logicals (32..=33)
         for offset in [0, 1, 2, 3, 4, 5, 6, 32, 33] {
             if ((current >> offset) & 1 == 1) && ((previous >> offset) & 1 == 0) {
-                lighting_handler.handle_event(LightingEvent::ButtonPressed { player: 0 });
+                lighting_handler.handle_event(LightingEvent::ButtonPressed { player: Player::P1 });
             }
         }
 
         // P2 gameplay (codes 9..=15) + encoder logicals (34..=35)
         for offset in [9, 10, 11, 12, 13, 14, 15, 34, 35] {
             if ((current >> offset) & 1 == 1) && ((previous >> offset) & 1 == 0) {
-                lighting_handler.handle_event(LightingEvent::ButtonPressed { player: 1 });
+                lighting_handler.handle_event(LightingEvent::ButtonPressed { player: Player::P2 });
             }
         }
     }

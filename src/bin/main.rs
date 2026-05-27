@@ -466,21 +466,21 @@ fn main() -> ! {
     let mut encoders: [EncoderState; NUM_ENCODERS] = [
         EncoderState::new(
             "P1 Encoder",
-            u8_to_key(config.encoders[0].key_up),
-            u8_to_key(config.encoders[0].key_down),
+            u8_to_key(config.encoders[Player::P1 as usize].key_up),
+            u8_to_key(config.encoders[Player::P1 as usize].key_down),
             &mut rx_p1,
-            config.encoders[0].debounce_ticks,
-            config.encoders[0].step_threshold,
-            config.encoders[0].move_timeout_ticks,
+            config.encoders[Player::P1 as usize].debounce_ticks,
+            config.encoders[Player::P1 as usize].step_threshold,
+            config.encoders[Player::P1 as usize].move_timeout_ticks,
         ),
         EncoderState::new(
             "P2 Encoder",
-            u8_to_key(config.encoders[1].key_up),
-            u8_to_key(config.encoders[1].key_down),
+            u8_to_key(config.encoders[Player::P2 as usize].key_up),
+            u8_to_key(config.encoders[Player::P2 as usize].key_down),
             &mut rx_p2,
-            config.encoders[1].debounce_ticks,
-            config.encoders[1].step_threshold,
-            config.encoders[1].move_timeout_ticks,
+            config.encoders[Player::P2 as usize].debounce_ticks,
+            config.encoders[Player::P2 as usize].step_threshold,
+            config.encoders[Player::P2 as usize].move_timeout_ticks,
         ),
     ];
 
@@ -654,12 +654,16 @@ fn main() -> ! {
         if fifo_is_empty {
             let packed_current_button_state =
                 add_header_to_word(CURRENT_BUTTON_STATE_HEADER, current_button_state);
-            let packed_encoder_p1_count =
-                add_header_to_word(ENCODER_P1_COUNT_HEADER, encoders[0].count as u32);
-            let packed_encoder_p2_count =
-                add_header_to_word(ENCODER_P2_COUNT_HEADER, encoders[1].count as u32);
-            let encoder_direction_bits = (encoders[0].direction as u32) & 0b11
-                | ((encoders[1].direction as u32) & 0b11) << 2;
+            let packed_encoder_p1_count = add_header_to_word(
+                ENCODER_P1_COUNT_HEADER,
+                encoders[Player::P1 as usize].count as u32,
+            );
+            let packed_encoder_p2_count = add_header_to_word(
+                ENCODER_P2_COUNT_HEADER,
+                encoders[Player::P2 as usize].count as u32,
+            );
+            let encoder_direction_bits = (encoders[Player::P1 as usize].direction as u32) & 0b11
+                | ((encoders[Player::P2 as usize].direction as u32) & 0b11) << 2;
             let packed_encoder_direction =
                 add_header_to_word(ENCODER_DIRECTION_HEADER, encoder_direction_bits);
             sio.fifo.write(packed_current_button_state);

@@ -4,8 +4,8 @@
 //! menu level definitions, and the macros used to generate repetitive menus.
 //! This module contains no runtime logic — it's pure type definitions and data.
 
-use crate::ButtonCode;
 use crate::menu_settings::{SettingKey, ValueKey};
+use crate::{ButtonCode, Player};
 
 // ── Display layout constants ───────────────────────────────────────
 
@@ -80,7 +80,7 @@ pub(crate) enum MenuAction {
     ShowPixelTest,
     EditValue(ValueKey),
     EditKeyBinding(ButtonCode),
-    OpenWikiEdit(usize),
+    OpenWikiEdit(Player),
     ApplyPreset(usize),
     SaveAndReboot,
     Discard,
@@ -250,7 +250,7 @@ macro_rules! lighting_submenu_zone {
             options: &[
                 $(MenuOption {
                     label: $label,
-                    action: MenuAction::EditValue(ValueKey::$player_vk(0)),
+                    action: MenuAction::EditValue(ValueKey::$player_vk($crate::Player::P1)),
                 }),+,
                 MenuOption { label: "Back", action: MenuAction::GoBack },
             ],
@@ -260,7 +260,7 @@ macro_rules! lighting_submenu_zone {
             options: &[
                 $(MenuOption {
                     label: $label,
-                    action: MenuAction::EditValue(ValueKey::$player_vk(1)),
+                    action: MenuAction::EditValue(ValueKey::$player_vk($crate::Player::P2)),
                 }),+,
                 MenuOption { label: "Back", action: MenuAction::GoBack },
             ],
@@ -328,11 +328,11 @@ macro_rules! define_button_menus {
                 }),*,
                 MenuOption {
                     label: "Enc1",
-                    action: MenuAction::EditValue(ValueKey::EncoderDebounce(0)),
+                    action: MenuAction::EditValue(ValueKey::EncoderDebounce($crate::Player::P1)),
                 },
                 MenuOption {
                     label: "Enc2",
-                    action: MenuAction::EditValue(ValueKey::EncoderDebounce(1)),
+                    action: MenuAction::EditValue(ValueKey::EncoderDebounce($crate::Player::P2)),
                 },
                 MenuOption {
                     label: "Back",
@@ -480,11 +480,11 @@ pub(crate) static ENCODER_SENS_MENU: MenuLevel = MenuLevel {
     options: &[
         MenuOption {
             label: "P1 Wiki",
-            action: MenuAction::OpenWikiEdit(0),
+            action: MenuAction::OpenWikiEdit(Player::P1),
         },
         MenuOption {
             label: "P2 Wiki",
-            action: MenuAction::OpenWikiEdit(1),
+            action: MenuAction::OpenWikiEdit(Player::P2),
         },
         MenuOption {
             label: "Back",
