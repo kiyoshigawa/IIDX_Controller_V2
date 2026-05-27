@@ -8,7 +8,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use rp235x_hal as hal;
 use usbd_human_interface_device::page::Keyboard;
 
-use crate::{DEFAULT_BUTTON_DEBOUNCE_TICKS, NUM_BUTTONS, NUM_ENCODERS};
+use crate::{NUM_BUTTONS, NUM_ENCODERS};
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Flash address layout
@@ -39,6 +39,15 @@ const FLASH_FOOTER: u32 = 0xAAAAAAAA;
 /// Bitwise inverse of [`FLASH_FOOTER`].
 const FLASH_FOOTER_INV: u32 = 0x55555555;
 
+/// RP2350 flash sector size (4 KB). Used for erase operations.
+pub(crate) const FLASH_SECTOR_SIZE: u32 = 4096;
+
+/// RP2350 flash page size (256 B). Used for program operations.
+pub(crate) const FLASH_PAGE_SIZE: u32 = 256;
+
+/// Flags passed to the ROM erase API (standard erase mode).
+pub(crate) const FLASH_ERASE_FLAGS: u8 = 0x20;
+
 /// Atomic flag to prevent concurrent flash writes from both cores.
 pub static FLASH_WRITE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
@@ -59,6 +68,9 @@ pub static FLASH_PENDING_REBOOT: AtomicBool = AtomicBool::new(false);
 // ──────────────────────────────────────────────────────────────────────────────
 // Default encoder timing constants (only used by FlashStoragePersistentMemory)
 // ──────────────────────────────────────────────────────────────────────────────
+
+/// Default button debounce time in timer ticks (1,000,000 ticks per second).
+const DEFAULT_BUTTON_DEBOUNCE_TICKS: u64 = 10_000;
 
 /// Default encoder debounce time in timer ticks (1,000,000 ticks per second).
 const DEFAULT_ENCODER_DEBOUNCE_TICKS: u64 = 1_000;
@@ -428,9 +440,6 @@ pub unsafe fn write_storage(storage: &FlashStoragePersistentMemory) {
         return;
     }
 
-    const FLASH_SECTOR_SIZE: u32 = 4096;
-    const FLASH_PAGE_SIZE: u32 = 256;
-
     let struct_size = core::mem::size_of::<FlashStoragePersistentMemory>();
     let struct_ptr = storage as *const FlashStoragePersistentMemory as *const u8;
 
@@ -442,16 +451,16 @@ pub unsafe fn write_storage(storage: &FlashStoragePersistentMemory) {
             FLASH_STORAGE_OFFSET,
             erase_size as usize,
             FLASH_SECTOR_SIZE,
-            0x20,
+            FLASH_ERASE_FLAGS,
         );
     }
 
-    // Step 2: Program the struct data one 256-byte page at a time.
+    // Step 2: Program the struct data one page at a time.
     let mut remaining = struct_size;
     let mut src = struct_ptr;
     let mut flash_offs = FLASH_STORAGE_OFFSET;
     while remaining > 0 {
-        let mut page_buf = [0xFFu8; 256];
+        let mut page_buf = [0xFFu8; FLASH_PAGE_SIZE as usize];
         let chunk_len = core::cmp::min(remaining, FLASH_PAGE_SIZE as usize);
         unsafe {
             core::ptr::copy_nonoverlapping(src, page_buf.as_mut_ptr(), chunk_len);
@@ -490,8 +499,6 @@ pub unsafe fn clear_storage(storage: &FlashStoragePersistentMemory) {
         return;
     }
 
-    const FLASH_SECTOR_SIZE: u32 = 4096;
-
     let struct_size = core::mem::size_of_val(storage);
     let erase_size =
         ((struct_size as u32 + (FLASH_SECTOR_SIZE - 1)) / FLASH_SECTOR_SIZE) * FLASH_SECTOR_SIZE;
@@ -501,7 +508,7 @@ pub unsafe fn clear_storage(storage: &FlashStoragePersistentMemory) {
             FLASH_STORAGE_OFFSET,
             erase_size as usize,
             FLASH_SECTOR_SIZE,
-            0x20,
+            FLASH_ERASE_FLAGS,
         );
     }
 

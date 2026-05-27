@@ -112,13 +112,8 @@ pub const TWELVE_BIT_OKLCH_RAINBOW_WEIGHTED: &[RGB8] = &[
 // Source-of-truth arrays — single source for menu display & animation config
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Display names for rainbow palettes, indexed 1:1 with [`RAINBOW_SLICES`].
-pub const RAINBOW_NAMES: &[&str] = &[
-    "Oklch", "OkWgt", "RYB", "OGP", "RGB", "BY", "RB", "Black", "White", "Red", "Orange", "Yellow",
-    "Lime", "Spring", "Cyan", "DpBlue", "Blue", "BlPurp", "Fuchsia", "DkPurp",
-];
-
-/// Actual `&[RGB8]` slices indexed 1:1 with [`RAINBOW_NAMES`].
+/// Actual `&[RGB8]` slices indexed 1:1 with the rainbow names in
+/// [`RAINBOW_NAMES`](crate::menu_settings::RAINBOW_NAMES).
 pub const RAINBOW_SLICES: &[&[RGB8]] = &[
     TWELVE_BIT_OKLCH_RAINBOW,
     TWELVE_BIT_OKLCH_RAINBOW_WEIGHTED,
@@ -142,19 +137,41 @@ pub const RAINBOW_SLICES: &[&[RGB8]] = &[
     lc::colors::R_DARK_PURPLE,
 ];
 
-/// Display names for background animation modes.
-pub const BG_MODE_NAMES: &[&str] = &["Rotate", "Follow", "Solid", "SFade", "Off"];
+// ──────────────────────────────────────────────────────────────────────────────
+// Named constants for animation mode/direction raw values
+// These match the index positions in the corresponding *_NAMES arrays above
+// and serve as a human-readable bridge between flash storage (`u8`) and the
+// animation API match statements.
+// ──────────────────────────────────────────────────────────────────────────────
 
-/// Display names for foreground animation modes.
-pub const FG_MODE_NAMES: &[&str] = &["Off", "Marq", "MrqFix", "MrqFad", "MrqFxF", "VU"];
+pub const BG_ROTATE: u8 = 0;
+pub const BG_FOLLOW: u8 = 1;
+pub const BG_SOLID: u8 = 2;
+pub const BG_SOLID_FADE: u8 = 3;
+pub const BG_OFF: u8 = 4;
 
-/// Display names for trigger animation modes.
-pub const TRIG_MODE_NAMES: &[&str] = &[
-    "Off", "Pulse", "PlsFad", "PlsRnb", "Shot", "ShtFad", "ShtRnb", "Flash", "FlsFad", "FlsRnb",
-];
+pub const FG_OFF: u8 = 0;
+pub const FG_MARQUEE: u8 = 1;
+pub const FG_MARQUEE_FIXED: u8 = 2;
+pub const FG_MARQUEE_FADE: u8 = 3;
+pub const FG_MARQUEE_FADE_FIXED: u8 = 4;
+pub const FG_VU_METER: u8 = 5;
 
-/// Display names for direction settings.
-pub const DIR_NAMES: &[&str] = &["Fwd", "Stop", "Rev"];
+pub const TRIG_OFF: u8 = 0;
+pub const TRIG_PULSE: u8 = 1;
+pub const TRIG_PULSE_FADE: u8 = 2;
+pub const TRIG_PULSE_RAINBOW: u8 = 3;
+pub const TRIG_SHOT: u8 = 4;
+pub const TRIG_SHOT_FADE: u8 = 5;
+pub const TRIG_SHOT_RAINBOW: u8 = 6;
+pub const TRIG_FLASH: u8 = 7;
+pub const TRIG_FLASH_FADE: u8 = 8;
+pub const TRIG_FLASH_RAINBOW: u8 = 9;
 
-/// Display names for trigger starting offset mode.
-pub const OFFSET_NAMES: &[&str] = &["Random", "Center", "Top"];
+pub const DIR_FWD: u8 = 0;
+pub const DIR_STOP: u8 = 1;
+pub const DIR_REV: u8 = 2;
+
+pub const OFFSET_RANDOM: u8 = 0;
+pub const OFFSET_CENTER: u8 = 1;
+pub const OFFSET_TOP: u8 = 2;

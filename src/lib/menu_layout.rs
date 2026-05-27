@@ -12,6 +12,9 @@ use crate::{ButtonCode, Player};
 /// Maximum number of menu levels that can be nested on the stack.
 pub(crate) const MAX_MENU_DEPTH: usize = 6;
 
+/// Size (in bytes) of each `FmtBuf` text-buffer line.
+pub(crate) const BUF_SIZE: usize = 24;
+
 /// All defined USB HID keyboard usage codes (0-231, skipping reserved range 165-223).
 pub(crate) static VALID_KEYS: &[u8] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
@@ -140,14 +143,14 @@ pub(crate) struct PromptChoice {
 /// Avoids heap allocation in the no_std environment.
 #[derive(Clone, Copy)]
 pub(crate) struct FmtBuf {
-    buf: [u8; crate::BUF_SIZE],
+    buf: [u8; BUF_SIZE],
     ptr: usize,
 }
 
 impl FmtBuf {
     pub(crate) fn new() -> Self {
         Self {
-            buf: [0; crate::BUF_SIZE],
+            buf: [0; BUF_SIZE],
             ptr: 0,
         }
     }

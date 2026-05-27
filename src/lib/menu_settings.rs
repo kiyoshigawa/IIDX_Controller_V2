@@ -12,10 +12,26 @@ use strum::IntoEnumIterator;
 
 use crate::menu_handler::MenuHandler;
 use crate::menu_layout::{Commit, Editor, FmtBuf, SettingMeta};
-use crate::{
-    BG_MODE_NAMES, ButtonCode, DIR_NAMES, FG_MODE_NAMES, FlashStoragePersistentMemory, NUM_BUTTONS,
-    OFFSET_NAMES, Player, RAINBOW_NAMES, TRIG_MODE_NAMES,
-};
+use crate::{ButtonCode, FlashStoragePersistentMemory, NUM_BUTTONS, Player};
+
+// ── Display-name arrays for menu option labels ────────────────────
+
+pub(crate) const BG_MODE_NAMES: &[&str] = &["Rotate", "Follow", "Solid", "SFade", "Off"];
+
+pub(crate) const FG_MODE_NAMES: &[&str] = &["Off", "Marq", "MrqFix", "MrqFad", "MrqFxF", "VU"];
+
+pub(crate) const TRIG_MODE_NAMES: &[&str] = &[
+    "Off", "Pulse", "PlsFad", "PlsRnb", "Shot", "ShtFad", "ShtRnb", "Flash", "FlsFad", "FlsRnb",
+];
+
+pub(crate) const DIR_NAMES: &[&str] = &["Fwd", "Stop", "Rev"];
+
+pub(crate) const OFFSET_NAMES: &[&str] = &["Random", "Center", "Top"];
+
+pub(crate) const RAINBOW_NAMES: &[&str] = &[
+    "Oklch", "OkWgt", "RYB", "OGP", "RGB", "BY", "RB", "Black", "White", "Red", "Orange", "Yellow",
+    "Lime", "Spring", "Cyan", "DpBlue", "Blue", "BlPurp", "Fuchsia", "DkPurp",
+];
 
 // ── Setting key enums ─────────────────────────────────────────────
 

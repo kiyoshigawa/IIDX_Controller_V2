@@ -191,28 +191,28 @@ impl LightingHandler {
     fn apply_player_config(&mut self, player: Player, pcfg: &PlayerAnimConfig) {
         let anim: &mut dyn Animatable = &mut self.animations[player as usize];
 
-        // BG direction from config (0=Fwd, 1=Stop, 2=Rev), default Positive
+        // BG direction from config
         let bg_dir = match pcfg.bg_dir {
-            1 => animations::Direction::Stopped,
-            2 => animations::Direction::Negative,
+            crate::DIR_STOP => animations::Direction::Stopped,
+            crate::DIR_REV => animations::Direction::Negative,
             _ => animations::Direction::Positive,
         };
         // FG direction from config
         let fg_dir = match pcfg.fg_dir {
-            1 => animations::Direction::Stopped,
-            2 => animations::Direction::Negative,
+            crate::DIR_STOP => animations::Direction::Stopped,
+            crate::DIR_REV => animations::Direction::Negative,
             _ => animations::Direction::Positive,
         };
 
         match pcfg.bg_mode {
-            0 | 1 => {
+            crate::BG_ROTATE | crate::BG_FOLLOW => {
                 // Rotate or Follow — FillRainbowRotate with config direction
                 anim.update_bg_mode(animations::background::Mode::FillRainbowRotate);
                 anim.update_bg_direction(bg_dir);
             }
-            2 => anim.update_bg_mode(animations::background::Mode::Solid),
-            3 => anim.update_bg_mode(animations::background::Mode::SolidFade),
-            4 => anim.update_bg_mode(animations::background::Mode::NoBackground),
+            crate::BG_SOLID => anim.update_bg_mode(animations::background::Mode::Solid),
+            crate::BG_SOLID_FADE => anim.update_bg_mode(animations::background::Mode::SolidFade),
+            crate::BG_OFF => anim.update_bg_mode(animations::background::Mode::NoBackground),
             _ => {}
         }
 
@@ -230,12 +230,18 @@ impl LightingHandler {
 
         // FG mode
         match pcfg.fg_mode {
-            0 => anim.update_fg_mode(animations::foreground::Mode::NoForeground),
-            1 => anim.update_fg_mode(animations::foreground::Mode::MarqueeSolid),
-            2 => anim.update_fg_mode(animations::foreground::Mode::MarqueeSolidFixed),
-            3 => anim.update_fg_mode(animations::foreground::Mode::MarqueeFade),
-            4 => anim.update_fg_mode(animations::foreground::Mode::MarqueeFadeFixed),
-            5 => anim.update_fg_mode(animations::foreground::Mode::VUMeter),
+            crate::FG_OFF => anim.update_fg_mode(animations::foreground::Mode::NoForeground),
+            crate::FG_MARQUEE => anim.update_fg_mode(animations::foreground::Mode::MarqueeSolid),
+            crate::FG_MARQUEE_FIXED => {
+                anim.update_fg_mode(animations::foreground::Mode::MarqueeSolidFixed)
+            }
+            crate::FG_MARQUEE_FADE => {
+                anim.update_fg_mode(animations::foreground::Mode::MarqueeFade)
+            }
+            crate::FG_MARQUEE_FADE_FIXED => {
+                anim.update_fg_mode(animations::foreground::Mode::MarqueeFadeFixed)
+            }
+            crate::FG_VU_METER => anim.update_fg_mode(animations::foreground::Mode::VUMeter),
             _ => {}
         }
 
@@ -275,9 +281,8 @@ impl LightingHandler {
     pub fn handle_event(&mut self, event: LightingEvent) {
         match event {
             LightingEvent::EncoderMoved { player, count } => {
-                // In Rotate mode (bg_mode=0) the rainbow rotates independently.
-                // Only apply encoder offset in Follow mode (bg_mode=1).
-                if self.player_cfg[player as usize].bg_mode != 1 {
+                // Only apply encoder offset in Follow mode.
+                if self.player_cfg[player as usize].bg_mode != crate::BG_FOLLOW {
                     return;
                 }
                 const STEPS_PER_REV: i32 = 2400;
@@ -287,9 +292,8 @@ impl LightingHandler {
                     .set_offset(animations::AnimationType::Background, offset as u16);
             }
             LightingEvent::DirectionChanged { player, direction } => {
-                // In Follow mode, reverse rotation to match wiki spin direction.
-                // Stopped is ignored so the animation keeps rotating in the last direction.
-                if self.player_cfg[player as usize].bg_mode != 1 {
+                // Only respond in Follow mode.
+                if self.player_cfg[player as usize].bg_mode != crate::BG_FOLLOW {
                     return;
                 }
                 let dir = match direction {
@@ -302,38 +306,38 @@ impl LightingHandler {
             LightingEvent::ButtonPressed { player } => {
                 let p_idx = player as usize;
                 let cfg = &self.player_cfg[p_idx];
-                if cfg.trig_mode == 0 {
+                if cfg.trig_mode == crate::TRIG_OFF {
                     return;
                 }
                 // Trigger direction: config sets starting direction, toggles each fire
                 let dir = match (cfg.trig_dir, self.trigger_dir_toggle[p_idx]) {
-                    (0, false) => animations::Direction::Positive,
-                    (0, true) => animations::Direction::Negative,
-                    (1, _) => animations::Direction::Stopped,
-                    (2, false) => animations::Direction::Negative,
-                    (2, true) => animations::Direction::Positive,
+                    (crate::DIR_FWD, false) => animations::Direction::Positive,
+                    (crate::DIR_FWD, true) => animations::Direction::Negative,
+                    (crate::DIR_STOP, _) => animations::Direction::Stopped,
+                    (crate::DIR_REV, false) => animations::Direction::Negative,
+                    (crate::DIR_REV, true) => animations::Direction::Positive,
                     _ => animations::Direction::Positive,
                 };
-                if cfg.trig_dir != 1 {
+                if cfg.trig_dir != crate::DIR_STOP {
                     self.trigger_dir_toggle[p_idx] = !self.trigger_dir_toggle[p_idx];
                 }
                 // Trigger offset: Random, Center, or Top
                 let offset = match cfg.trig_offset {
-                    1 => animations::MAX_OFFSET / 2,
-                    2 => 0,
+                    crate::OFFSET_CENTER => animations::MAX_OFFSET / 2,
+                    crate::OFFSET_TOP => 0,
                     _ => 0, // Random — overridden by init functions
                 };
                 let params = animations::trigger::Parameters {
                     mode: match cfg.trig_mode {
-                        1 => animations::trigger::Mode::ColorPulse,
-                        2 => animations::trigger::Mode::ColorPulseFade,
-                        3 => animations::trigger::Mode::ColorPulseRainbow,
-                        4 => animations::trigger::Mode::ColorShot,
-                        5 => animations::trigger::Mode::ColorShotFade,
-                        6 => animations::trigger::Mode::ColorShotRainbow,
-                        7 => animations::trigger::Mode::Flash,
-                        8 => animations::trigger::Mode::FlashFade,
-                        9 => animations::trigger::Mode::FlashRainbow,
+                        crate::TRIG_PULSE => animations::trigger::Mode::ColorPulse,
+                        crate::TRIG_PULSE_FADE => animations::trigger::Mode::ColorPulseFade,
+                        crate::TRIG_PULSE_RAINBOW => animations::trigger::Mode::ColorPulseRainbow,
+                        crate::TRIG_SHOT => animations::trigger::Mode::ColorShot,
+                        crate::TRIG_SHOT_FADE => animations::trigger::Mode::ColorShotFade,
+                        crate::TRIG_SHOT_RAINBOW => animations::trigger::Mode::ColorShotRainbow,
+                        crate::TRIG_FLASH => animations::trigger::Mode::Flash,
+                        crate::TRIG_FLASH_FADE => animations::trigger::Mode::FlashFade,
+                        crate::TRIG_FLASH_RAINBOW => animations::trigger::Mode::FlashRainbow,
                         _ => animations::trigger::Mode::ColorPulse,
                     },
                     direction: dir,

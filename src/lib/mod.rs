@@ -58,9 +58,6 @@ pub const NUM_PLAYERS: usize = 2;
 /// combined u64 state variable on core1. Physical button bits occupy 0–31.
 const LOGICAL_BUTTON_OFFSET: usize = 32;
 
-/// Default button debounce time in timer ticks (1,000,000 ticks per second).
-pub const DEFAULT_BUTTON_DEBOUNCE_TICKS: u64 = 10_000;
-
 /// USB device tick interval (1 ms per USB spec).
 pub const USB_TICK_INTERVAL_TICKS: u64 = 1_000;
 
@@ -82,9 +79,6 @@ pub const IDLE_RESET_TIMEOUT_TICKS: u64 = 10_000_000 * 900;
 
 /// Minimum ticks between OLED screen refreshes (~10 Hz).
 pub const SCREEN_REFRESH_TICKS: u64 = 100_000;
-
-/// Size (in bytes) of each `FmtBuf` text-buffer line.
-pub const BUF_SIZE: usize = 24;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Inter-core FIFO protocol and flash storage headers

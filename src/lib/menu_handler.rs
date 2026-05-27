@@ -27,15 +27,15 @@ use crate::menu_layout::{
     PromptChoice, PromptSide, ROOT_MENU, StackItem, VALID_KEYS, WIKI_EDIT_DUMMY, clamp_step,
     flip_for, key_index, option_line_indices,
 };
-use crate::menu_settings::WikiEditState;
 use crate::menu_settings::{
-    SettingKey, ValueKey, build_editor, for_each_changed_field, format_change_item, key_name,
+    BG_MODE_NAMES, DIR_NAMES, FG_MODE_NAMES, OFFSET_NAMES, RAINBOW_NAMES, SettingKey,
+    TRIG_MODE_NAMES, ValueKey, WikiEditState, build_editor, for_each_changed_field,
+    format_change_item, key_name,
 };
-use crate::{
-    BG_MODE_NAMES, ButtonCode, DEFAULT_BUTTON_DEBOUNCE_TICKS, DIR_NAMES, FG_MODE_NAMES,
-    FlashStoragePersistentMemory, NUM_BUTTONS, OFFSET_NAMES, OledDisplay, Player, RAINBOW_NAMES,
-    TRIG_MODE_NAMES,
-};
+use crate::{ButtonCode, FlashStoragePersistentMemory, NUM_BUTTONS, OledDisplay, Player};
+
+/// Default debounce value used when initialising the "All" debounce setting.
+const DEFAULT_BUTTON_DEBOUNCE_TICKS: u64 = 10_000;
 
 /// Y-offset at which the button layout graphic is drawn on the 64-px screen.
 /// (63 − 26 − 2 + 1 = 36)
