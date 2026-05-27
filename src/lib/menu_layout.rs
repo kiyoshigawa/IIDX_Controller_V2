@@ -81,6 +81,7 @@ pub(crate) enum MenuAction {
     EditValue(ValueKey),
     EditKeyBinding(ButtonCode),
     OpenWikiEdit(usize),
+    ApplyPreset(usize),
     SaveAndReboot,
     Discard,
     ResetDefaults,
@@ -499,8 +500,58 @@ pub(crate) static WIKI_EDIT_DUMMY: MenuLevel = MenuLevel {
     options: &[],
 };
 
-pub(crate) static LIGHTING_MENU: MenuLevel = MenuLevel {
-    title: "Lighting",
+pub(crate) static PRESETS_MENU: MenuLevel = MenuLevel {
+    title: "Pick Preset",
+    options: &[
+        MenuOption {
+            label: "Preset-0",
+            action: MenuAction::ApplyPreset(0),
+        },
+        MenuOption {
+            label: "Preset-1",
+            action: MenuAction::ApplyPreset(1),
+        },
+        MenuOption {
+            label: "Preset-2",
+            action: MenuAction::ApplyPreset(2),
+        },
+        MenuOption {
+            label: "Preset-3",
+            action: MenuAction::ApplyPreset(3),
+        },
+        MenuOption {
+            label: "Preset-4",
+            action: MenuAction::ApplyPreset(4),
+        },
+        MenuOption {
+            label: "Preset-5",
+            action: MenuAction::ApplyPreset(5),
+        },
+        MenuOption {
+            label: "Preset-6",
+            action: MenuAction::ApplyPreset(6),
+        },
+        MenuOption {
+            label: "Preset-7",
+            action: MenuAction::ApplyPreset(7),
+        },
+        MenuOption {
+            label: "Preset-8",
+            action: MenuAction::ApplyPreset(8),
+        },
+        MenuOption {
+            label: "Preset-9",
+            action: MenuAction::ApplyPreset(9),
+        },
+        MenuOption {
+            label: "Back",
+            action: MenuAction::GoBack,
+        },
+    ],
+};
+
+pub(crate) static EDIT_CURRENT_MENU: MenuLevel = MenuLevel {
+    title: "Edit Current",
     options: &[
         MenuOption {
             label: "Both",
@@ -515,7 +566,25 @@ pub(crate) static LIGHTING_MENU: MenuLevel = MenuLevel {
             action: MenuAction::OpenSubmenu(&P2_MENU),
         },
         MenuOption {
-            label: "Global",
+            label: "Back",
+            action: MenuAction::GoBack,
+        },
+    ],
+};
+
+pub(crate) static LIGHTING_MENU: MenuLevel = MenuLevel {
+    title: "Lighting",
+    options: &[
+        MenuOption {
+            label: "Pick Preset",
+            action: MenuAction::OpenSubmenu(&PRESETS_MENU),
+        },
+        MenuOption {
+            label: "Edit Current",
+            action: MenuAction::OpenSubmenu(&EDIT_CURRENT_MENU),
+        },
+        MenuOption {
+            label: "Global Opt",
             action: MenuAction::OpenSubmenu(&GLOBAL_MENU),
         },
         MenuOption {

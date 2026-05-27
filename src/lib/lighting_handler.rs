@@ -187,8 +187,7 @@ impl LightingHandler {
         }
     }
 
-    /// Efficiently synchronise the lighting handler with the menu's RAM shadow
-    /// of flash settings.  Only performs work when the config has actually changed.
+    /// push animation config changes made to the live animations
     pub fn sync_config(&mut self, cfg: &crate::flash_storage::LightingConfig) {
         if self.last_applied_cfg == *cfg {
             return;
@@ -288,77 +287,81 @@ impl LightingHandler {
             LightingEvent::EncoderMoved { player, count } => {
                 // In Rotate mode (bg_mode=0) the rainbow rotates independently.
                 // Only apply encoder offset in Follow mode (bg_mode=1).
-                if player < NUM_PLAYERS && self.player_cfg[player].bg_mode == 1 {
-                    const STEPS_PER_REV: i32 = 2400;
-                    let normalized = count.rem_euclid(STEPS_PER_REV);
-                    let offset = ((normalized as u32 * (u16::MAX as u32)) / (STEPS_PER_REV as u32)) as u16;
-                    match player {
-                        0 => self.a1.set_offset(animations::AnimationType::Background, offset),
-                        1 => self.a2.set_offset(animations::AnimationType::Background, offset),
-                        _ => {}
-                    }
+                if player >= NUM_PLAYERS || self.player_cfg[player].bg_mode != 1 {
+                    return;
+                }
+                const STEPS_PER_REV: i32 = 2400;
+                let normalized = count.rem_euclid(STEPS_PER_REV);
+                let offset = (normalized * (u16::MAX as i32)) / STEPS_PER_REV;
+                match player {
+                    0 => self.a1.set_offset(animations::AnimationType::Background, offset as u16),
+                    1 => self.a2.set_offset(animations::AnimationType::Background, offset as u16),
+                    _ => return
                 }
             }
             LightingEvent::DirectionChanged { player, direction } => {
                 // In Follow mode, reverse rotation to match wiki spin direction.
                 // Stopped is ignored so the animation keeps rotating in the last direction.
-                if player < NUM_PLAYERS && self.player_cfg[player].bg_mode == 1 {
-                    let dir = match direction {
-                        crate::EncoderDirection::Positive => animations::Direction::Positive,
-                        crate::EncoderDirection::Negative => animations::Direction::Negative,
-                        crate::EncoderDirection::Stopped => return,
-                    };
-                    match player {
-                        0 => self.a1.update_bg_direction(dir),
-                        1 => self.a2.update_bg_direction(dir),
-                        _ => {}
-                    }
+                if player >= NUM_PLAYERS || self.player_cfg[player].bg_mode != 1 {
+                    return;
+                }
+                let dir = match direction {
+                    crate::EncoderDirection::Positive => animations::Direction::Positive,
+                    crate::EncoderDirection::Negative => animations::Direction::Negative,
+                    crate::EncoderDirection::Stopped => return,
+                };
+                match player {
+                    0 => self.a1.update_bg_direction(dir),
+                    1 => self.a2.update_bg_direction(dir),
+                    _ => return
                 }
             }
             LightingEvent::ButtonPressed { player } => {
-                if player < NUM_PLAYERS {
-                    let cfg = &self.player_cfg[player];
-                    if cfg.trig_mode == 0 { return; }
-                    // Trigger direction: config sets starting direction, toggles each fire
-                    let dir = match (cfg.trig_dir, self.trigger_dir_toggle[player]) {
-                        (0, false) => animations::Direction::Positive,
-                        (0, true) => animations::Direction::Negative,
-                        (1, _) => animations::Direction::Stopped,
-                        (2, false) => animations::Direction::Negative,
-                        (2, true) => animations::Direction::Positive,
-                        _ => animations::Direction::Positive,
-                    };
-                    if cfg.trig_dir != 1 {
-                        self.trigger_dir_toggle[player] = !self.trigger_dir_toggle[player];
-                    }
-                    // Trigger offset: Random, Center, or Top
-                    let offset = match cfg.trig_offset {
-                        1 => animations::MAX_OFFSET / 2,
-                        2 => 0,
-                        _ => 0, // Random — overridden by init functions
-                    };
-                    let params = animations::trigger::Parameters {
-                        mode: match cfg.trig_mode {
-                            1 => animations::trigger::Mode::ColorPulse,
-                            2 => animations::trigger::Mode::ColorPulseFade,
-                            3 => animations::trigger::Mode::ColorPulseRainbow,
-                            4 => animations::trigger::Mode::ColorShot,
-                            5 => animations::trigger::Mode::ColorShotFade,
-                            6 => animations::trigger::Mode::ColorShotRainbow,
-                            7 => animations::trigger::Mode::Flash,
-                            8 => animations::trigger::Mode::FlashFade,
-                            9 => animations::trigger::Mode::FlashRainbow,
-                            _ => animations::trigger::Mode::ColorPulse,
-                        },
-                        direction: dir,
-                        fade_in_time_ns: (cfg.trig_fade_in_ms as u64) * 1_000_000,
-                        fade_out_time_ns: (cfg.trig_fade_out_ms as u64) * 1_000_000,
-                        starting_offset: offset,
-                        pixels_per_pixel_group: cfg.trig_width as usize,
-                    };
-                    if player == 0 { self.a1.trigger(&params, self.frame_rate); }
-                    else { self.a2.trigger(&params, self.frame_rate); }
+                if player >= NUM_PLAYERS {
+                    return;
                 }
+
+                let cfg = &self.player_cfg[player];
+                if cfg.trig_mode == 0 { return; }
+                // Trigger direction: config sets starting direction, toggles each fire
+                let dir = match (cfg.trig_dir, self.trigger_dir_toggle[player]) {
+                    (0, false) => animations::Direction::Positive,
+                    (0, true) => animations::Direction::Negative,
+                    (1, _) => animations::Direction::Stopped,
+                    (2, false) => animations::Direction::Negative,
+                    (2, true) => animations::Direction::Positive,
+                    _ => animations::Direction::Positive,
+                };
+                if cfg.trig_dir != 1 {
+                    self.trigger_dir_toggle[player] = !self.trigger_dir_toggle[player];
+                }
+                // Trigger offset: Random, Center, or Top
+                let offset = match cfg.trig_offset {
+                    1 => animations::MAX_OFFSET / 2,
+                    2 => 0,
+                    _ => 0, // Random — overridden by init functions
+                };
+                let params = animations::trigger::Parameters {
+                    mode: match cfg.trig_mode {
+                        1 => animations::trigger::Mode::ColorPulse,
+                        2 => animations::trigger::Mode::ColorPulseFade,
+                        3 => animations::trigger::Mode::ColorPulseRainbow,
+                        4 => animations::trigger::Mode::ColorShot,
+                        5 => animations::trigger::Mode::ColorShotFade,
+                        6 => animations::trigger::Mode::ColorShotRainbow,
+                        7 => animations::trigger::Mode::Flash,
+                        8 => animations::trigger::Mode::FlashFade,
+                        9 => animations::trigger::Mode::FlashRainbow,
+                        _ => animations::trigger::Mode::ColorPulse,
+                    },
+                    direction: dir,
+                    fade_in_time_ns: (cfg.trig_fade_in_ms as u64) * 1_000_000,
+                    fade_out_time_ns: (cfg.trig_fade_out_ms as u64) * 1_000_000,
+                    starting_offset: offset,
+                    pixels_per_pixel_group: cfg.trig_width as usize,
+                };
+                if player == 0 { self.a1.trigger(&params, self.frame_rate); }
+                else { self.a2.trigger(&params, self.frame_rate); }
             }
         }
     }

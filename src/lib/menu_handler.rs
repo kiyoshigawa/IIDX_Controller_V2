@@ -1452,6 +1452,13 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                     original_key_idx: idx,
                 };
             }
+            MenuAction::ApplyPreset(idx) => {
+                debug!("menu: apply preset {}", idx);
+                self.settings.lighting = self.settings.presets[idx];
+                self.settings.active_preset = idx as u8;
+                self.settings_changed = true;
+                self.prompt_answered_since_change = false;
+            }
             MenuAction::OpenWikiEdit(encoder) => {
                 debug!("menu: wiki edit P{}", encoder + 1);
                 self.push_level(&WIKI_EDIT_DUMMY);
@@ -1474,6 +1481,9 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 while !FLASH_CORE0_READY.load(Ordering::SeqCst) {
                     core::hint::spin_loop();
                 }
+                // Persist the live config back into the active preset slot before saving.
+                self.settings.presets[self.settings.active_preset as usize] =
+                    self.settings.lighting;
                 // Safe to write flash — core0 isn't fetching from XIP.
                 unsafe {
                     write_storage(&self.settings);

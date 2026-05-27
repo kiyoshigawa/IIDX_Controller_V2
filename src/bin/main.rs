@@ -110,12 +110,8 @@ fn main() -> ! {
 
             // Re-read after cache flush so we see the freshly written data.
             &*(FLASH_STORAGE_BASE_ADDR as *const FlashStoragePersistentMemory)
-        } else if raw.lighting.brightness == 0
-            || raw.lighting.brightness > 200
-            || raw.lighting.players[0].bg_mode > 4
-            || raw.lighting.players[0].trig_dur_s > 60
-        {
-            info!("Lighting config is uninitialized. Rewriting defaults...");
+        } else if !raw.has_valid_layout() {
+            info!("Storage format changed. Rewriting defaults (preserving buttons/encoders)...");
             let mut defaults = FlashStoragePersistentMemory::default();
             defaults.header = raw.header;
             defaults.header_inv = raw.header_inv;
@@ -127,6 +123,13 @@ fn main() -> ! {
             info!("Storage is initialized. Using stored configuration.");
             raw
         }
+    };
+
+    // Apply the active preset's lighting config on boot so the device remembers
+    // which look was selected when it was last saved.
+    let boot_config = FlashStoragePersistentMemory {
+        lighting: config.presets[config.active_preset as usize],
+        ..*config
     };
 
     // Shared timer for timed tasks, counts at 1_000_000 ticks per second (or 1 tick per us if you prefer)
@@ -513,13 +516,13 @@ fn main() -> ! {
             // don't use this area for shared peripherals, they should be set up outside this function.
 
             // These will handle processing input changes and triggering events based on the input state.
-            let menu_handler = MenuHandler::new(&mut display, *config);
+            let menu_handler = MenuHandler::new(&mut display, boot_config);
             let mut input_handler = InputHandler::new(menu_handler);
 
             // Lighting controller setup — two per-player animations
             let frame_rate: embedded_time::rate::Hertz = embedded_time::rate::Extensions::Hz(144);
             let mut lighting_handler = LightingHandler::new(frame_rate, TWELVE_BIT_OKLCH_RAINBOW);
-            lighting_handler.apply_config(&config.lighting);
+            lighting_handler.apply_config(&boot_config.lighting);
 
             // core1 loop state variables:
             let mut last_core1_heartbeat_tick = 0_u64;

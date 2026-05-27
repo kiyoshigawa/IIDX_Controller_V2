@@ -29,6 +29,16 @@ const FLASH_HEADER: u32 = 0xA5A5A5A5;
 /// "is-initialised" check against erased (0xFF) flash.
 const FLASH_HEADER_INV: u32 = 0x5A5A5A5A;
 
+/// Magic word written to the last 8 bytes of the struct as a version sentinel.
+/// When the struct layout or size changes, this sentinel lands at a different
+/// byte offset from the start, so the old bytes at that position won't match.
+/// This provides an automatic self-check against struct shape changes without
+/// per-field migration logic.
+const FLASH_FOOTER: u32 = 0xAAAAAAAA;
+
+/// Bitwise inverse of [`FLASH_FOOTER`].
+const FLASH_FOOTER_INV: u32 = 0x55555555;
+
 /// Atomic flag to prevent concurrent flash writes from both cores.
 pub static FLASH_WRITE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
@@ -89,6 +99,9 @@ pub struct EncoderConfig {
     pub move_timeout_ticks: u64,
 }
 
+/// Number of lighting presets stored in flash.
+pub const NUM_PRESETS: usize = 10;
+
 /// Per-player animation configuration stored in flash.
 /// Each field is an index into the corresponding `lighting_consts::*_NAMES` array.
 #[repr(C)]
@@ -138,12 +151,26 @@ pub struct FlashStoragePersistentMemory {
     pub buttons: [ButtonConfig; NUM_BUTTONS],
     pub encoders: [EncoderConfig; NUM_ENCODERS],
     pub lighting: LightingConfig,
+    pub presets: [LightingConfig; NUM_PRESETS],
+    pub active_preset: u8,
+    pub footer: u32,
+    pub footer_inv: u32,
 }
 
 impl FlashStoragePersistentMemory {
     /// Returns `true` if the flash header words match the expected magic values.
     pub fn has_been_written(&self) -> bool {
         self.header == FLASH_HEADER && self.header_inv == FLASH_HEADER_INV
+    }
+
+    /// Returns `true` if the struct layout and size match the current version.
+    ///
+    /// Checks the trailing sentinel words. If these don't match, the struct
+    /// size or field layout has changed since the data was written, and
+    /// defaults should be rewritten. This is the single source of truth for
+    /// detecting format changes — no per-field migration checks needed.
+    pub fn has_valid_layout(&self) -> bool {
+        self.footer == FLASH_FOOTER && self.footer_inv == FLASH_FOOTER_INV
     }
 
     /// Factory-default configuration matching the original template key bindings.
@@ -311,13 +338,75 @@ impl FlashStoragePersistentMemory {
             brightness: 200,
         };
 
+        // Build the preset array — each preset currently gets the same base default.
+        // In the future, replace arms in default_preset() to import custom lighting
+        // effects per preset slot.
+        let presets = [
+            default_preset(0),
+            default_preset(1),
+            default_preset(2),
+            default_preset(3),
+            default_preset(4),
+            default_preset(5),
+            default_preset(6),
+            default_preset(7),
+            default_preset(8),
+            default_preset(9),
+        ];
+
         Self {
             header: FLASH_HEADER,
             header_inv: FLASH_HEADER_INV,
             buttons,
             encoders,
             lighting,
+            presets,
+            active_preset: 0,
+            footer: FLASH_FOOTER,
+            footer_inv: FLASH_FOOTER_INV,
         }
+    }
+}
+
+/// Returns the default [`LightingConfig`] for a given preset slot index.
+///
+/// Currently all slots return the same base default. When custom lighting effects
+/// are added for specific presets in the future, add match arms here:
+///
+/// ```ignore
+/// match idx {
+///     0 => base,
+///     1 => LightingConfig { players: [p1_custom, p2_custom], brightness: 200 },
+///     _ => base,
+/// }
+/// ```
+pub fn default_preset(idx: usize) -> LightingConfig {
+    let _ = idx; // used by future match arms
+    let p = PlayerAnimConfig {
+        bg_mode: 1,    // Follow
+        bg_rainbow: 0, // Oklch
+        bg_subdivisions: 1,
+        bg_speed_ds: 50, // 5.0 s
+        bg_dir: 0,
+        fg_mode: 0,    // Off
+        fg_rainbow: 4, // RGB
+        fg_subdivisions: 1,
+        fg_speed_ds: 50, // 5.0 s
+        fg_step_ds: 4,   // 0.4 s
+        fg_px_per_group: 1,
+        fg_dir: 0,
+        trig_mode: 1,    // Pulse
+        trig_rainbow: 7, // Black
+        trig_fade_in_ms: 100,
+        trig_fade_out_ms: 500,
+        trig_width: 3,
+        trig_dir: 0,
+        trig_offset: 0,
+        trig_dur_s: 1,
+    };
+    LightingConfig {
+        players: [p; 2],
+        brightness: 200,
     }
 }
 
