@@ -66,7 +66,9 @@ pub struct InputHandler<'a, D> {
     pub current_combined_button_state: u64,
     pub previous_combined_button_state: u64,
     /// Per-button hold-tracking state, indexed by ButtonCode as usize.
-    hold_states: [ButtonHoldState; 36],
+    /// Sized to the full u64 bit range (64) so new ButtonCode variants
+    /// never need an array-size update.
+    hold_states: [ButtonHoldState; 64],
     /// Tick of the last CC button press (used for menu idle timeout).
     last_cc_press_tick: u64,
     /// Whether the idle event has already been sent for the current idle period.
@@ -90,7 +92,7 @@ impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
             encoder_p2_direction: EncoderDirection::Stopped,
             current_combined_button_state: 0_u64,
             previous_combined_button_state: 0_u64,
-            hold_states: [ButtonHoldState::default(); 36],
+            hold_states: [ButtonHoldState::default(); 64],
             last_cc_press_tick: 0,
             idle_event_sent: false,
             last_encoder_p1_count: 0_i32,
@@ -260,15 +262,35 @@ impl<'a, D: WriteOnlyDataCommand> InputHandler<'a, D> {
         let current = self.current_combined_button_state;
         let previous = self.previous_combined_button_state;
 
-        // P1 gameplay (codes 0..=6) + encoder logicals (32..=33)
-        for offset in [0, 1, 2, 3, 4, 5, 6, 32, 33] {
+        // P1 gameplay (P1_1..P1_7) + encoder logicals
+        for offset in [
+            ButtonCode::P1_1 as usize,
+            ButtonCode::P1_2 as usize,
+            ButtonCode::P1_3 as usize,
+            ButtonCode::P1_4 as usize,
+            ButtonCode::P1_5 as usize,
+            ButtonCode::P1_6 as usize,
+            ButtonCode::P1_7 as usize,
+            ButtonCode::P1Positive as usize,
+            ButtonCode::P1Negative as usize,
+        ] {
             if ((current >> offset) & 1 == 1) && ((previous >> offset) & 1 == 0) {
                 lighting_handler.handle_event(LightingEvent::ButtonPressed { player: Player::P1 });
             }
         }
 
-        // P2 gameplay (codes 9..=15) + encoder logicals (34..=35)
-        for offset in [9, 10, 11, 12, 13, 14, 15, 34, 35] {
+        // P2 gameplay (P2_1..P2_7) + encoder logicals
+        for offset in [
+            ButtonCode::P2_1 as usize,
+            ButtonCode::P2_2 as usize,
+            ButtonCode::P2_3 as usize,
+            ButtonCode::P2_4 as usize,
+            ButtonCode::P2_5 as usize,
+            ButtonCode::P2_6 as usize,
+            ButtonCode::P2_7 as usize,
+            ButtonCode::P2Positive as usize,
+            ButtonCode::P2Negative as usize,
+        ] {
             if ((current >> offset) & 1 == 1) && ((previous >> offset) & 1 == 0) {
                 lighting_handler.handle_event(LightingEvent::ButtonPressed { player: Player::P2 });
             }

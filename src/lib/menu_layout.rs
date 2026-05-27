@@ -327,11 +327,11 @@ macro_rules! define_button_menus {
                     action: MenuAction::EditValue(ValueKey::ButtonDebounce(ButtonCode::$code)),
                 }),*,
                 MenuOption {
-                    label: "Enc1",
+                    label: "Wiki1",
                     action: MenuAction::EditValue(ValueKey::EncoderDebounce($crate::Player::P1)),
                 },
                 MenuOption {
-                    label: "Enc2",
+                    label: "Wiki2",
                     action: MenuAction::EditValue(ValueKey::EncoderDebounce($crate::Player::P2)),
                 },
                 MenuOption {
@@ -349,19 +349,19 @@ macro_rules! define_button_menus {
                     action: MenuAction::EditKeyBinding(ButtonCode::$code),
                 }),*,
                 MenuOption {
-                    label: "Enc1+",
+                    label: "Wiki1+",
                     action: MenuAction::EditKeyBinding(ButtonCode::P1Positive),
                 },
                 MenuOption {
-                    label: "Enc1-",
+                    label: "Wiki1-",
                     action: MenuAction::EditKeyBinding(ButtonCode::P1Negative),
                 },
                 MenuOption {
-                    label: "Enc2+",
+                    label: "Wiki2+",
                     action: MenuAction::EditKeyBinding(ButtonCode::P2Positive),
                 },
                 MenuOption {
-                    label: "Enc2-",
+                    label: "Wiki2-",
                     action: MenuAction::EditKeyBinding(ButtonCode::P2Negative),
                 },
                 MenuOption {

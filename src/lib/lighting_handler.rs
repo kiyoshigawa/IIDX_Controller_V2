@@ -19,6 +19,7 @@ use lighting_controller::animations::Animatable;
 use lighting_controller::{self as lc, animations, utility};
 use rgb::RGB8;
 use smart_leds::colors::BLACK;
+use strum::IntoEnumIterator;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Gamma correction
@@ -52,11 +53,8 @@ pub struct LightingHandler {
     /// The frame buffer written to the WS2812 strip each cycle.
     pub color_buffer: [RGB8; NUM_LEDS],
 
-    /// Player 1 animation (LEDs 0–28).
-    a1: animations::Animation<'static, LEDS_PER_SIDE>,
-
-    /// Player 2 animation (LEDs 29–57).
-    a2: animations::Animation<'static, LEDS_PER_SIDE>,
+    /// Per-player animations, indexed by Player.
+    animations: [animations::Animation<'static, LEDS_PER_SIDE>; NUM_PLAYERS],
 
     /// Current brightness level (0–255).
     brightness: u8,
@@ -78,7 +76,7 @@ impl LightingHandler {
     /// Create a new handler with two per-player animations, both initialised
     /// with the given rainbow and frame rate.
     pub fn new(frame_rate: Hertz, rainbow: &'static [RGB8]) -> Self {
-        let a1 = animations::Animation::<LEDS_PER_SIDE>::new(
+        let p1 = animations::Animation::<LEDS_PER_SIDE>::new(
             lc::default_animations::ANI_DEFAULT,
             frame_rate,
         )
@@ -88,7 +86,7 @@ impl LightingHandler {
         .set_trig_incremental_rainbow(lc::colors::R_BLACK, animations::RainbowDir::Forward)
         .set_trig_fade_rainbow(lc::colors::R_BLACK, animations::RainbowDir::Forward);
 
-        let mut a2 = animations::Animation::<LEDS_PER_SIDE>::new(
+        let mut p2 = animations::Animation::<LEDS_PER_SIDE>::new(
             lc::default_animations::ANI_DEFAULT,
             frame_rate,
         )
@@ -99,17 +97,16 @@ impl LightingHandler {
         .set_bg_subdivisions(2)
         .set_bg_direction(animations::Direction::Negative);
 
-        a2.set_offset(
+        p2.set_offset(
             animations::AnimationType::Background,
             animations::MAX_OFFSET / 2,
         );
-        a2.update_trig_incremental_rainbow(lc::colors::R_BLACK, animations::RainbowDir::Forward);
-        a2.update_trig_fade_rainbow(lc::colors::R_BLACK, animations::RainbowDir::Forward);
+        p2.update_trig_incremental_rainbow(lc::colors::R_BLACK, animations::RainbowDir::Forward);
+        p2.update_trig_fade_rainbow(lc::colors::R_BLACK, animations::RainbowDir::Forward);
 
         Self {
             color_buffer: [BLACK; NUM_LEDS],
-            a1,
-            a2,
+            animations: [p1, p2],
             brightness: DEFAULT_BRIGHTNESS,
             frame_rate,
             player_cfg: [PlayerAnimConfig::default(); NUM_PLAYERS],
@@ -121,19 +118,14 @@ impl LightingHandler {
     /// Drive both animations forward one frame and copy their segment data
     /// into the shared colour buffer.
     pub fn update(&mut self) {
-        self.a1.update();
-        self.a2.update();
-
-        let seg1 = self.a1.segment();
-        let trans1 = self.a1.translation_array();
-        for (&i, &c) in trans1.iter().zip(seg1.iter()) {
-            self.color_buffer[i] = c;
-        }
-
-        let seg2 = self.a2.segment();
-        let trans2 = self.a2.translation_array();
-        for (&i, &c) in trans2.iter().zip(seg2.iter()) {
-            self.color_buffer[i] = c;
+        for p in Player::iter() {
+            let a = &mut self.animations[p as usize];
+            a.update();
+            let seg = a.segment();
+            let trans = a.translation_array();
+            for (&i, &c) in trans.iter().zip(seg.iter()) {
+                self.color_buffer[i] = c;
+            }
         }
     }
 
@@ -197,10 +189,7 @@ impl LightingHandler {
     }
 
     fn apply_player_config(&mut self, player: Player, pcfg: &PlayerAnimConfig) {
-        let anim: &mut dyn Animatable = match player {
-            Player::P1 => &mut self.a1,
-            Player::P2 => &mut self.a2,
-        };
+        let anim: &mut dyn Animatable = &mut self.animations[player as usize];
 
         // BG direction from config (0=Fwd, 1=Stop, 2=Rev), default Positive
         let bg_dir = match pcfg.bg_dir {
@@ -294,14 +283,8 @@ impl LightingHandler {
                 const STEPS_PER_REV: i32 = 2400;
                 let normalized = count.rem_euclid(STEPS_PER_REV);
                 let offset = (normalized * (u16::MAX as i32)) / STEPS_PER_REV;
-                match player {
-                    Player::P1 => self
-                        .a1
-                        .set_offset(animations::AnimationType::Background, offset as u16),
-                    Player::P2 => self
-                        .a2
-                        .set_offset(animations::AnimationType::Background, offset as u16),
-                }
+                self.animations[player as usize]
+                    .set_offset(animations::AnimationType::Background, offset as u16);
             }
             LightingEvent::DirectionChanged { player, direction } => {
                 // In Follow mode, reverse rotation to match wiki spin direction.
@@ -314,10 +297,7 @@ impl LightingHandler {
                     crate::EncoderDirection::Negative => animations::Direction::Negative,
                     crate::EncoderDirection::Stopped => return,
                 };
-                match player {
-                    Player::P1 => self.a1.update_bg_direction(dir),
-                    Player::P2 => self.a2.update_bg_direction(dir),
-                }
+                self.animations[player as usize].update_bg_direction(dir);
             }
             LightingEvent::ButtonPressed { player } => {
                 let p_idx = player as usize;
@@ -362,10 +342,7 @@ impl LightingHandler {
                     starting_offset: offset,
                     pixels_per_pixel_group: cfg.trig_width as usize,
                 };
-                match player {
-                    Player::P1 => self.a1.trigger(&params, self.frame_rate),
-                    Player::P2 => self.a2.trigger(&params, self.frame_rate),
-                }
+                self.animations[player as usize].trigger(&params, self.frame_rate);
             }
         }
     }

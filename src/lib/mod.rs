@@ -178,10 +178,10 @@ impl ButtonCode {
             Self::VolumeUp => "V_UP",
             Self::VolumeDown => "V_DN",
             Self::Mute => "Mute",
-            Self::P1Positive => "Enc1+",
-            Self::P1Negative => "Enc1-",
-            Self::P2Positive => "Enc2+",
-            Self::P2Negative => "Enc2-",
+            Self::P1Positive => "Wiki1+",
+            Self::P1Negative => "Wiki1-",
+            Self::P2Positive => "Wiki2+",
+            Self::P2Negative => "Wiki2-",
         }
     }
 }
