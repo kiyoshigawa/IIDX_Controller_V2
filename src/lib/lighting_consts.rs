@@ -138,40 +138,277 @@ pub const RAINBOW_SLICES: &[&[RGB8]] = &[
 ];
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Named constants for animation mode/direction raw values
-// These match the index positions in the corresponding *_NAMES arrays above
-// and serve as a human-readable bridge between flash storage (`u8`) and the
-// animation API match statements.
+// Enums for animation mode / direction / offset / rainbow fields
+//
+// These replace the old `pub const u8` blocks.  Each enum is #[repr(u8)] so it
+// maps 1:1 to the flash-stored `u8` value.  `From<u8>` provides a safe fallback
+// for stale flash data.  `display_name()` returns the OLED menu label strings.
 // ──────────────────────────────────────────────────────────────────────────────
 
-pub const BG_ROTATE: u8 = 0;
-pub const BG_FOLLOW: u8 = 1;
-pub const BG_SOLID: u8 = 2;
-pub const BG_SOLID_FADE: u8 = 3;
-pub const BG_OFF: u8 = 4;
+/// Background animation mode.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BgMode {
+    Rotate = 0,
+    Follow = 1,
+    Solid = 2,
+    SolidFade = 3,
+    Off = 4,
+}
 
-pub const FG_OFF: u8 = 0;
-pub const FG_MARQUEE: u8 = 1;
-pub const FG_MARQUEE_FIXED: u8 = 2;
-pub const FG_MARQUEE_FADE: u8 = 3;
-pub const FG_MARQUEE_FADE_FIXED: u8 = 4;
-pub const FG_VU_METER: u8 = 5;
+impl From<u8> for BgMode {
+    fn from(v: u8) -> Self {
+        match v {
+            0 => Self::Rotate,
+            1 => Self::Follow,
+            2 => Self::Solid,
+            3 => Self::SolidFade,
+            4 => Self::Off,
+            _ => Self::Rotate, // safe fallback for unknown flash values
+        }
+    }
+}
 
-pub const TRIG_OFF: u8 = 0;
-pub const TRIG_PULSE: u8 = 1;
-pub const TRIG_PULSE_FADE: u8 = 2;
-pub const TRIG_PULSE_RAINBOW: u8 = 3;
-pub const TRIG_SHOT: u8 = 4;
-pub const TRIG_SHOT_FADE: u8 = 5;
-pub const TRIG_SHOT_RAINBOW: u8 = 6;
-pub const TRIG_FLASH: u8 = 7;
-pub const TRIG_FLASH_FADE: u8 = 8;
-pub const TRIG_FLASH_RAINBOW: u8 = 9;
+impl BgMode {
+    pub const fn display_name(&self) -> &'static str {
+        match self {
+            Self::Rotate => "Rotate",
+            Self::Follow => "Follow",
+            Self::Solid => "Solid",
+            Self::SolidFade => "SFade",
+            Self::Off => "Off",
+        }
+    }
+}
 
-pub const DIR_FWD: u8 = 0;
-pub const DIR_STOP: u8 = 1;
-pub const DIR_REV: u8 = 2;
+/// Foreground animation mode.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FgMode {
+    Off = 0,
+    Marquee = 1,
+    MarqueeFixed = 2,
+    MarqueeFade = 3,
+    MarqueeFadeFixed = 4,
+    VUMeter = 5,
+}
 
-pub const OFFSET_RANDOM: u8 = 0;
-pub const OFFSET_CENTER: u8 = 1;
-pub const OFFSET_TOP: u8 = 2;
+impl From<u8> for FgMode {
+    fn from(v: u8) -> Self {
+        match v {
+            0 => Self::Off,
+            1 => Self::Marquee,
+            2 => Self::MarqueeFixed,
+            3 => Self::MarqueeFade,
+            4 => Self::MarqueeFadeFixed,
+            5 => Self::VUMeter,
+            _ => Self::Off, // safe fallback for unknown flash values
+        }
+    }
+}
+
+impl FgMode {
+    pub const fn display_name(&self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Marquee => "Marq",
+            Self::MarqueeFixed => "MrqFix",
+            Self::MarqueeFade => "MrqFad",
+            Self::MarqueeFadeFixed => "MrqFxF",
+            Self::VUMeter => "VU",
+        }
+    }
+}
+
+/// Trigger animation mode.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TrigMode {
+    Off = 0,
+    Pulse = 1,
+    PulseFade = 2,
+    PulseRainbow = 3,
+    Shot = 4,
+    ShotFade = 5,
+    ShotRainbow = 6,
+    Flash = 7,
+    FlashFade = 8,
+    FlashRainbow = 9,
+}
+
+impl From<u8> for TrigMode {
+    fn from(v: u8) -> Self {
+        match v {
+            0 => Self::Off,
+            1 => Self::Pulse,
+            2 => Self::PulseFade,
+            3 => Self::PulseRainbow,
+            4 => Self::Shot,
+            5 => Self::ShotFade,
+            6 => Self::ShotRainbow,
+            7 => Self::Flash,
+            8 => Self::FlashFade,
+            9 => Self::FlashRainbow,
+            _ => Self::Off, // safe fallback for unknown flash values
+        }
+    }
+}
+
+impl TrigMode {
+    pub const fn display_name(&self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Pulse => "Pulse",
+            Self::PulseFade => "PlsFad",
+            Self::PulseRainbow => "PlsRnb",
+            Self::Shot => "Shot",
+            Self::ShotFade => "ShtFad",
+            Self::ShotRainbow => "ShtRnb",
+            Self::Flash => "Flash",
+            Self::FlashFade => "FlsFad",
+            Self::FlashRainbow => "FlsRnb",
+        }
+    }
+}
+
+/// Direction for any animation layer (background, foreground, trigger).
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Direction {
+    Fwd = 0,
+    Stop = 1,
+    Rev = 2,
+}
+
+impl From<u8> for Direction {
+    fn from(v: u8) -> Self {
+        match v {
+            0 => Self::Fwd,
+            1 => Self::Stop,
+            2 => Self::Rev,
+            _ => Self::Fwd, // safe fallback for unknown flash values
+        }
+    }
+}
+
+impl Direction {
+    pub const fn display_name(&self) -> &'static str {
+        match self {
+            Self::Fwd => "Fwd",
+            Self::Stop => "Stop",
+            Self::Rev => "Rev",
+        }
+    }
+}
+
+/// Trigger starting offset.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TrigOffset {
+    Random = 0,
+    Center = 1,
+    Top = 2,
+}
+
+impl From<u8> for TrigOffset {
+    fn from(v: u8) -> Self {
+        match v {
+            0 => Self::Random,
+            1 => Self::Center,
+            2 => Self::Top,
+            _ => Self::Random, // safe fallback for unknown flash values
+        }
+    }
+}
+
+impl TrigOffset {
+    pub const fn display_name(&self) -> &'static str {
+        match self {
+            Self::Random => "Random",
+            Self::Center => "Center",
+            Self::Top => "Top",
+        }
+    }
+}
+
+/// Rainbow palette index matching 1:1 with [`RAINBOW_SLICES`] and
+/// [`RAINBOW_NAMES`](crate::menu_settings::RAINBOW_NAMES).
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Rainbow {
+    Oklch = 0,
+    OkWgt = 1,
+    Ryb = 2,
+    Ogp = 3,
+    Rgb = 4,
+    By = 5,
+    Rb = 6,
+    Black = 7,
+    White = 8,
+    Red = 9,
+    Orange = 10,
+    Yellow = 11,
+    Lime = 12,
+    Spring = 13,
+    Cyan = 14,
+    DpBlue = 15,
+    Blue = 16,
+    BlPurp = 17,
+    Fuchsia = 18,
+    DkPurp = 19,
+}
+
+impl From<u8> for Rainbow {
+    fn from(v: u8) -> Self {
+        match v {
+            0 => Self::Oklch,
+            1 => Self::OkWgt,
+            2 => Self::Ryb,
+            3 => Self::Ogp,
+            4 => Self::Rgb,
+            5 => Self::By,
+            6 => Self::Rb,
+            7 => Self::Black,
+            8 => Self::White,
+            9 => Self::Red,
+            10 => Self::Orange,
+            11 => Self::Yellow,
+            12 => Self::Lime,
+            13 => Self::Spring,
+            14 => Self::Cyan,
+            15 => Self::DpBlue,
+            16 => Self::Blue,
+            17 => Self::BlPurp,
+            18 => Self::Fuchsia,
+            19 => Self::DkPurp,
+            _ => Self::Oklch, // safe fallback for unknown flash values
+        }
+    }
+}
+
+impl Rainbow {
+    pub const fn display_name(&self) -> &'static str {
+        match self {
+            Self::Oklch => "Oklch",
+            Self::OkWgt => "OkWgt",
+            Self::Ryb => "RYB",
+            Self::Ogp => "OGP",
+            Self::Rgb => "RGB",
+            Self::By => "BY",
+            Self::Rb => "RB",
+            Self::Black => "Black",
+            Self::White => "White",
+            Self::Red => "Red",
+            Self::Orange => "Orange",
+            Self::Yellow => "Yellow",
+            Self::Lime => "Lime",
+            Self::Spring => "Spring",
+            Self::Cyan => "Cyan",
+            Self::DpBlue => "DpBlue",
+            Self::Blue => "Blue",
+            Self::BlPurp => "BlPurp",
+            Self::Fuchsia => "Fuchsia",
+            Self::DkPurp => "DkPurp",
+        }
+    }
+}

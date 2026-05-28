@@ -13,7 +13,7 @@
 
 use crate::flash_storage::PlayerAnimConfig;
 use crate::led_strip::{LEDS_PER_SIDE, NUM_LEDS};
-use crate::{NUM_PLAYERS, Player};
+use crate::{BgMode, Direction, FgMode, NUM_PLAYERS, Player, TrigMode, TrigOffset};
 use embedded_time::rate::Hertz;
 use lighting_controller::animations::Animatable;
 use lighting_controller::{self as lc, animations, utility};
@@ -200,28 +200,27 @@ impl LightingHandler {
         let anim: &mut dyn Animatable = &mut self.animations[player as usize];
 
         // BG direction from config
-        let bg_dir = match pcfg.bg_dir {
-            crate::DIR_STOP => animations::Direction::Stopped,
-            crate::DIR_REV => animations::Direction::Negative,
-            _ => animations::Direction::Positive,
+        let bg_dir = match Direction::from(pcfg.bg_dir) {
+            Direction::Stop => animations::Direction::Stopped,
+            Direction::Rev => animations::Direction::Negative,
+            Direction::Fwd => animations::Direction::Positive,
         };
         // FG direction from config
-        let fg_dir = match pcfg.fg_dir {
-            crate::DIR_STOP => animations::Direction::Stopped,
-            crate::DIR_REV => animations::Direction::Negative,
-            _ => animations::Direction::Positive,
+        let fg_dir = match Direction::from(pcfg.fg_dir) {
+            Direction::Stop => animations::Direction::Stopped,
+            Direction::Rev => animations::Direction::Negative,
+            Direction::Fwd => animations::Direction::Positive,
         };
 
-        match pcfg.bg_mode {
-            crate::BG_ROTATE | crate::BG_FOLLOW => {
+        match BgMode::from(pcfg.bg_mode) {
+            BgMode::Rotate | BgMode::Follow => {
                 // Rotate or Follow — FillRainbowRotate with config direction
                 anim.update_bg_mode(animations::background::Mode::FillRainbowRotate);
                 anim.update_bg_direction(bg_dir);
             }
-            crate::BG_SOLID => anim.update_bg_mode(animations::background::Mode::Solid),
-            crate::BG_SOLID_FADE => anim.update_bg_mode(animations::background::Mode::SolidFade),
-            crate::BG_OFF => anim.update_bg_mode(animations::background::Mode::NoBackground),
-            _ => {}
+            BgMode::Solid => anim.update_bg_mode(animations::background::Mode::Solid),
+            BgMode::SolidFade => anim.update_bg_mode(animations::background::Mode::SolidFade),
+            BgMode::Off => anim.update_bg_mode(animations::background::Mode::NoBackground),
         }
 
         // BG rainbow & subdivisions
@@ -237,20 +236,17 @@ impl LightingHandler {
         anim.update_bg_duration_ns(bg_ns, self.frame_rate);
 
         // FG mode
-        match pcfg.fg_mode {
-            crate::FG_OFF => anim.update_fg_mode(animations::foreground::Mode::NoForeground),
-            crate::FG_MARQUEE => anim.update_fg_mode(animations::foreground::Mode::MarqueeSolid),
-            crate::FG_MARQUEE_FIXED => {
+        match FgMode::from(pcfg.fg_mode) {
+            FgMode::Off => anim.update_fg_mode(animations::foreground::Mode::NoForeground),
+            FgMode::Marquee => anim.update_fg_mode(animations::foreground::Mode::MarqueeSolid),
+            FgMode::MarqueeFixed => {
                 anim.update_fg_mode(animations::foreground::Mode::MarqueeSolidFixed)
             }
-            crate::FG_MARQUEE_FADE => {
-                anim.update_fg_mode(animations::foreground::Mode::MarqueeFade)
-            }
-            crate::FG_MARQUEE_FADE_FIXED => {
+            FgMode::MarqueeFade => anim.update_fg_mode(animations::foreground::Mode::MarqueeFade),
+            FgMode::MarqueeFadeFixed => {
                 anim.update_fg_mode(animations::foreground::Mode::MarqueeFadeFixed)
             }
-            crate::FG_VU_METER => anim.update_fg_mode(animations::foreground::Mode::VUMeter),
-            _ => {}
+            FgMode::VUMeter => anim.update_fg_mode(animations::foreground::Mode::VUMeter),
         }
 
         // FG rainbow & subdivisions
@@ -266,7 +262,7 @@ impl LightingHandler {
         anim.update_fg_duration_ns(fg_ns, self.frame_rate);
         let step_ns = (pcfg.fg_step_ds as u64) * 100_000_000;
         anim.update_fg_step_time_ns(step_ns, self.frame_rate);
-        anim.update_fg_pixels_per_pixel_group(pcfg.fg_px_per_group as usize);
+        anim.update_fg_pixels_per_pixel_group(pcfg.fg_leds_per_group as usize);
 
         // FG direction from config
         anim.update_fg_direction(fg_dir);
@@ -280,7 +276,7 @@ impl LightingHandler {
         anim.update_trig_fade_rainbow(trig_rainbow, animations::RainbowDir::Forward);
 
         // Trigger cycle duration
-        let dur_ns = (pcfg.trig_dur_s as u64) * 1_000_000_000;
+        let dur_ns = (pcfg.trig_dur_ds as u64) * 100_000_000;
         anim.update_trig_duration_ns(dur_ns, self.frame_rate);
     }
 
@@ -290,7 +286,7 @@ impl LightingHandler {
         match event {
             LightingEvent::EncoderMoved { player, count } => {
                 // Only apply encoder offset in Follow mode.
-                if self.player_cfg[player as usize].bg_mode != crate::BG_FOLLOW {
+                if BgMode::from(self.player_cfg[player as usize].bg_mode) != BgMode::Follow {
                     return;
                 }
                 const STEPS_PER_REV: i32 = 2400;
@@ -301,7 +297,7 @@ impl LightingHandler {
             }
             LightingEvent::DirectionChanged { player, direction } => {
                 // Only respond in Follow mode.
-                if self.player_cfg[player as usize].bg_mode != crate::BG_FOLLOW {
+                if BgMode::from(self.player_cfg[player as usize].bg_mode) != BgMode::Follow {
                     return;
                 }
                 let dir = match direction {
@@ -314,45 +310,47 @@ impl LightingHandler {
             LightingEvent::ButtonPressed { player } => {
                 let p_idx = player as usize;
                 let cfg = &self.player_cfg[p_idx];
-                if cfg.trig_mode == crate::TRIG_OFF {
+                if TrigMode::from(cfg.trig_mode) == TrigMode::Off {
                     return;
                 }
                 // Trigger direction: config sets starting direction, toggles each fire
-                let dir = match (cfg.trig_dir, self.trigger_dir_toggle[p_idx]) {
-                    (crate::DIR_FWD, false) => animations::Direction::Positive,
-                    (crate::DIR_FWD, true) => animations::Direction::Negative,
-                    (crate::DIR_STOP, _) => animations::Direction::Stopped,
-                    (crate::DIR_REV, false) => animations::Direction::Negative,
-                    (crate::DIR_REV, true) => animations::Direction::Positive,
-                    _ => animations::Direction::Positive,
+                let dir = match (
+                    Direction::from(cfg.trig_dir),
+                    self.trigger_dir_toggle[p_idx],
+                ) {
+                    (Direction::Fwd, false) => animations::Direction::Positive,
+                    (Direction::Fwd, true) => animations::Direction::Negative,
+                    (Direction::Stop, _) => animations::Direction::Stopped,
+                    (Direction::Rev, false) => animations::Direction::Negative,
+                    (Direction::Rev, true) => animations::Direction::Positive,
                 };
-                if cfg.trig_dir != crate::DIR_STOP {
+                if Direction::from(cfg.trig_dir) != Direction::Stop {
                     self.trigger_dir_toggle[p_idx] = !self.trigger_dir_toggle[p_idx];
                 }
                 // Trigger offset: Random, Center, or Top
-                let offset = match cfg.trig_offset {
-                    crate::OFFSET_CENTER => animations::MAX_OFFSET / 2,
-                    crate::OFFSET_TOP => 0,
-                    _ => 0, // Random — overridden by init functions
+                let offset = match TrigOffset::from(cfg.trig_offset) {
+                    TrigOffset::Center => animations::MAX_OFFSET / 2,
+                    TrigOffset::Top => 0,
+                    TrigOffset::Random => 0, // Random — overridden by init functions
                 };
                 let params = animations::trigger::Parameters {
-                    mode: match cfg.trig_mode {
-                        crate::TRIG_PULSE => animations::trigger::Mode::ColorPulse,
-                        crate::TRIG_PULSE_FADE => animations::trigger::Mode::ColorPulseFade,
-                        crate::TRIG_PULSE_RAINBOW => animations::trigger::Mode::ColorPulseRainbow,
-                        crate::TRIG_SHOT => animations::trigger::Mode::ColorShot,
-                        crate::TRIG_SHOT_FADE => animations::trigger::Mode::ColorShotFade,
-                        crate::TRIG_SHOT_RAINBOW => animations::trigger::Mode::ColorShotRainbow,
-                        crate::TRIG_FLASH => animations::trigger::Mode::Flash,
-                        crate::TRIG_FLASH_FADE => animations::trigger::Mode::FlashFade,
-                        crate::TRIG_FLASH_RAINBOW => animations::trigger::Mode::FlashRainbow,
-                        _ => animations::trigger::Mode::ColorPulse,
+                    mode: match TrigMode::from(cfg.trig_mode) {
+                        TrigMode::Pulse => animations::trigger::Mode::ColorPulse,
+                        TrigMode::PulseFade => animations::trigger::Mode::ColorPulseFade,
+                        TrigMode::PulseRainbow => animations::trigger::Mode::ColorPulseRainbow,
+                        TrigMode::Shot => animations::trigger::Mode::ColorShot,
+                        TrigMode::ShotFade => animations::trigger::Mode::ColorShotFade,
+                        TrigMode::ShotRainbow => animations::trigger::Mode::ColorShotRainbow,
+                        TrigMode::Flash => animations::trigger::Mode::Flash,
+                        TrigMode::FlashFade => animations::trigger::Mode::FlashFade,
+                        TrigMode::FlashRainbow => animations::trigger::Mode::FlashRainbow,
+                        TrigMode::Off => animations::trigger::Mode::NoTrigger,
                     },
                     direction: dir,
                     fade_in_time_ns: (cfg.trig_fade_in_ms as u64) * 1_000_000,
                     fade_out_time_ns: (cfg.trig_fade_out_ms as u64) * 1_000_000,
                     starting_offset: offset,
-                    pixels_per_pixel_group: cfg.trig_width as usize,
+                    pixels_per_pixel_group: cfg.trig_width_in_leds as usize,
                 };
                 self.animations[player as usize].trigger(&params, self.frame_rate);
             }

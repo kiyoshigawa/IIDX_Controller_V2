@@ -12,25 +12,79 @@ use strum::IntoEnumIterator;
 
 use crate::menu_handler::MenuHandler;
 use crate::menu_layout::{Commit, Editor, FmtBuf, SettingMeta};
+use crate::{BgMode, Direction, FgMode, Rainbow, TrigMode, TrigOffset};
 use crate::{ButtonCode, FlashStoragePersistentMemory, NUM_BUTTONS, Player};
 
 // ── Display-name arrays for menu option labels ────────────────────
+//
+// These const arrays are derived from the enum `display_name()` methods,
+// keeping the enum as the single source of truth for both variant order
+// and display labels.  If you add/remove/rename a variant, update its
+// `display_name()` arm — these arrays follow automatically.
 
-pub(crate) const BG_MODE_NAMES: &[&str] = &["Rotate", "Follow", "Solid", "SFade", "Off"];
-
-pub(crate) const FG_MODE_NAMES: &[&str] = &["Off", "Marq", "MrqFix", "MrqFad", "MrqFxF", "VU"];
-
-pub(crate) const TRIG_MODE_NAMES: &[&str] = &[
-    "Off", "Pulse", "PlsFad", "PlsRnb", "Shot", "ShtFad", "ShtRnb", "Flash", "FlsFad", "FlsRnb",
+pub(crate) const BG_MODE_NAMES: &[&str] = &[
+    BgMode::Rotate.display_name(),
+    BgMode::Follow.display_name(),
+    BgMode::Solid.display_name(),
+    BgMode::SolidFade.display_name(),
+    BgMode::Off.display_name(),
 ];
 
-pub(crate) const DIR_NAMES: &[&str] = &["Fwd", "Stop", "Rev"];
+pub(crate) const FG_MODE_NAMES: &[&str] = &[
+    FgMode::Off.display_name(),
+    FgMode::Marquee.display_name(),
+    FgMode::MarqueeFixed.display_name(),
+    FgMode::MarqueeFade.display_name(),
+    FgMode::MarqueeFadeFixed.display_name(),
+    FgMode::VUMeter.display_name(),
+];
 
-pub(crate) const OFFSET_NAMES: &[&str] = &["Random", "Center", "Top"];
+pub(crate) const TRIG_MODE_NAMES: &[&str] = &[
+    TrigMode::Off.display_name(),
+    TrigMode::Pulse.display_name(),
+    TrigMode::PulseFade.display_name(),
+    TrigMode::PulseRainbow.display_name(),
+    TrigMode::Shot.display_name(),
+    TrigMode::ShotFade.display_name(),
+    TrigMode::ShotRainbow.display_name(),
+    TrigMode::Flash.display_name(),
+    TrigMode::FlashFade.display_name(),
+    TrigMode::FlashRainbow.display_name(),
+];
+
+pub(crate) const DIR_NAMES: &[&str] = &[
+    Direction::Fwd.display_name(),
+    Direction::Stop.display_name(),
+    Direction::Rev.display_name(),
+];
+
+pub(crate) const OFFSET_NAMES: &[&str] = &[
+    TrigOffset::Random.display_name(),
+    TrigOffset::Center.display_name(),
+    TrigOffset::Top.display_name(),
+];
 
 pub(crate) const RAINBOW_NAMES: &[&str] = &[
-    "Oklch", "OkWgt", "RYB", "OGP", "RGB", "BY", "RB", "Black", "White", "Red", "Orange", "Yellow",
-    "Lime", "Spring", "Cyan", "DpBlue", "Blue", "BlPurp", "Fuchsia", "DkPurp",
+    Rainbow::Oklch.display_name(),
+    Rainbow::OkWgt.display_name(),
+    Rainbow::Ryb.display_name(),
+    Rainbow::Ogp.display_name(),
+    Rainbow::Rgb.display_name(),
+    Rainbow::By.display_name(),
+    Rainbow::Rb.display_name(),
+    Rainbow::Black.display_name(),
+    Rainbow::White.display_name(),
+    Rainbow::Red.display_name(),
+    Rainbow::Orange.display_name(),
+    Rainbow::Yellow.display_name(),
+    Rainbow::Lime.display_name(),
+    Rainbow::Spring.display_name(),
+    Rainbow::Cyan.display_name(),
+    Rainbow::DpBlue.display_name(),
+    Rainbow::Blue.display_name(),
+    Rainbow::BlPurp.display_name(),
+    Rainbow::Fuchsia.display_name(),
+    Rainbow::DkPurp.display_name(),
 ];
 
 // ── Setting key enums ─────────────────────────────────────────────
@@ -213,7 +267,7 @@ impl SettingKey {
                 [AllTrigFdIn, PlayerTrigFdIn, 50, 50, 2000, 1, "ms"],
                 [AllTrigFdOut, PlayerTrigFdOut, 50, 50, 5000, 1, "ms"],
                 [AllTrigSize, PlayerTrigSize, 1, 1, 10, 1, "px"],
-                [AllTrigDur, PlayerTrigDur, 1, 1, 60, 1, "s"],
+                [AllTrigDur, PlayerTrigDur, 1, 10, 600, 10, "s"],
             ]
         );
         match self {
@@ -544,15 +598,15 @@ pub(crate) fn for_each_changed_field(
                 [PlayerFgSpd, fg_speed_ds],
                 [PlayerFgSubdiv, fg_subdivisions],
                 [PlayerFgStep, fg_step_ds],
-                [PlayerFgSize, fg_px_per_group],
+                [PlayerFgSize, fg_leds_per_group],
                 [PlayerTrigMode, trig_mode],
                 [PlayerTrigRainbow, trig_rainbow],
                 [PlayerTrigFdIn, trig_fade_in_ms],
                 [PlayerTrigFdOut, trig_fade_out_ms],
-                [PlayerTrigSize, trig_width],
+                [PlayerTrigSize, trig_width_in_leds],
                 [PlayerTrigDir, trig_dir],
                 [PlayerTrigOffset, trig_offset],
-                [PlayerTrigDur, trig_dur_s],
+                [PlayerTrigDur, trig_dur_ds],
             ]
         );
     }
@@ -740,9 +794,9 @@ pub(crate) fn build_editor(
                 SettingKey::PlayerFgStep(p) => {
                     settings.lighting.players[p as usize].fg_step_ds as u32
                 }
-                SettingKey::AllFgSize => settings.lighting.players[0].fg_px_per_group as u32,
+                SettingKey::AllFgSize => settings.lighting.players[0].fg_leds_per_group as u32,
                 SettingKey::PlayerFgSize(p) => {
-                    settings.lighting.players[p as usize].fg_px_per_group as u32
+                    settings.lighting.players[p as usize].fg_leds_per_group as u32
                 }
                 SettingKey::AllTrigFdIn => settings.lighting.players[0].trig_fade_in_ms as u32,
                 SettingKey::PlayerTrigFdIn(p) => {
@@ -752,13 +806,13 @@ pub(crate) fn build_editor(
                 SettingKey::PlayerTrigFdOut(p) => {
                     settings.lighting.players[p as usize].trig_fade_out_ms as u32
                 }
-                SettingKey::AllTrigSize => settings.lighting.players[0].trig_width as u32,
+                SettingKey::AllTrigSize => settings.lighting.players[0].trig_width_in_leds as u32,
                 SettingKey::PlayerTrigSize(p) => {
-                    settings.lighting.players[p as usize].trig_width as u32
+                    settings.lighting.players[p as usize].trig_width_in_leds as u32
                 }
-                SettingKey::AllTrigDur => settings.lighting.players[0].trig_dur_s as u32,
+                SettingKey::AllTrigDur => settings.lighting.players[0].trig_dur_ds as u32,
                 SettingKey::PlayerTrigDur(p) => {
-                    settings.lighting.players[p as usize].trig_dur_s as u32
+                    settings.lighting.players[p as usize].trig_dur_ds as u32
                 }
                 SettingKey::GlobalBrightness => settings.lighting.brightness as u32,
                 _ => 0,
@@ -961,15 +1015,15 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 [AllFgSpd, PlayerFgSpd, fg_speed_ds],
                 [AllFgSubdiv, PlayerFgSubdiv, fg_subdivisions],
                 [AllFgStep, PlayerFgStep, fg_step_ds],
-                [AllFgSize, PlayerFgSize, fg_px_per_group],
+                [AllFgSize, PlayerFgSize, fg_leds_per_group],
                 [AllTrigMode, PlayerTrigMode, trig_mode],
                 [AllTrigRainbow, PlayerTrigRainbow, trig_rainbow],
                 [AllTrigFdIn, PlayerTrigFdIn, trig_fade_in_ms],
                 [AllTrigFdOut, PlayerTrigFdOut, trig_fade_out_ms],
-                [AllTrigSize, PlayerTrigSize, trig_width],
+                [AllTrigSize, PlayerTrigSize, trig_width_in_leds],
                 [AllTrigDir, PlayerTrigDir, trig_dir],
                 [AllTrigOffset, PlayerTrigOffset, trig_offset],
-                [AllTrigDur, PlayerTrigDur, trig_dur_s],
+                [AllTrigDur, PlayerTrigDur, trig_dur_ds],
             ]
         );
         match key {
@@ -1012,15 +1066,15 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 [AllFgSpd, PlayerFgSpd, fg_speed_ds, u16],
                 [AllFgSubdiv, PlayerFgSubdiv, fg_subdivisions, u8],
                 [AllFgStep, PlayerFgStep, fg_step_ds, u16],
-                [AllFgSize, PlayerFgSize, fg_px_per_group, u8],
+                [AllFgSize, PlayerFgSize, fg_leds_per_group, u8],
                 [AllTrigMode, PlayerTrigMode, trig_mode, u8],
                 [AllTrigRainbow, PlayerTrigRainbow, trig_rainbow, u8],
                 [AllTrigFdIn, PlayerTrigFdIn, trig_fade_in_ms, u16],
                 [AllTrigFdOut, PlayerTrigFdOut, trig_fade_out_ms, u16],
-                [AllTrigSize, PlayerTrigSize, trig_width, u8],
+                [AllTrigSize, PlayerTrigSize, trig_width_in_leds, u8],
                 [AllTrigDir, PlayerTrigDir, trig_dir, u8],
                 [AllTrigOffset, PlayerTrigOffset, trig_offset, u8],
-                [AllTrigDur, PlayerTrigDur, trig_dur_s, u8],
+                [AllTrigDur, PlayerTrigDur, trig_dur_ds, u8],
             ]
         );
         match key {
@@ -1196,15 +1250,15 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                     [PlayerFgSpd, fg_speed_ds],
                     [PlayerFgSubdiv, fg_subdivisions],
                     [PlayerFgStep, fg_step_ds],
-                    [PlayerFgSize, fg_px_per_group],
+                    [PlayerFgSize, fg_leds_per_group],
                     [PlayerTrigMode, trig_mode],
                     [PlayerTrigRainbow, trig_rainbow],
                     [PlayerTrigFdIn, trig_fade_in_ms],
                     [PlayerTrigFdOut, trig_fade_out_ms],
-                    [PlayerTrigSize, trig_width],
+                    [PlayerTrigSize, trig_width_in_leds],
                     [PlayerTrigDir, trig_dir],
                     [PlayerTrigOffset, trig_offset],
-                    [PlayerTrigDur, trig_dur_s],
+                    [PlayerTrigDur, trig_dur_ds],
                 ]
             );
         }
@@ -1296,7 +1350,7 @@ pub(crate) fn format_change_item(
                     Player::P2 => 2,
                 };
                 write!(label_buf, "P{} BG Mode", n).ok();
-                write!(value_buf, "{}", BG_MODE_NAMES[cur as usize]).ok();
+                write!(value_buf, "{}", BgMode::from(cur as u8).display_name()).ok();
             }
             FieldDescriptor::PlayerBgRainbow(p) => {
                 let n = match p {
@@ -1304,7 +1358,7 @@ pub(crate) fn format_change_item(
                     Player::P2 => 2,
                 };
                 write!(label_buf, "P{} BG Rainbow", n).ok();
-                write!(value_buf, "{}", RAINBOW_NAMES[cur as usize]).ok();
+                write!(value_buf, "{}", Rainbow::from(cur as u8).display_name()).ok();
             }
             FieldDescriptor::PlayerBgSpd(p) => {
                 let n = match p {
@@ -1328,7 +1382,7 @@ pub(crate) fn format_change_item(
                     Player::P2 => 2,
                 };
                 write!(label_buf, "P{} FG Mode", n).ok();
-                write!(value_buf, "{}", FG_MODE_NAMES[cur as usize]).ok();
+                write!(value_buf, "{}", FgMode::from(cur as u8).display_name()).ok();
             }
             FieldDescriptor::PlayerFgRainbow(p) => {
                 let n = match p {
@@ -1336,7 +1390,7 @@ pub(crate) fn format_change_item(
                     Player::P2 => 2,
                 };
                 write!(label_buf, "P{} FG Rainbow", n).ok();
-                write!(value_buf, "{}", RAINBOW_NAMES[cur as usize]).ok();
+                write!(value_buf, "{}", Rainbow::from(cur as u8).display_name()).ok();
             }
             FieldDescriptor::PlayerFgSpd(p) => {
                 let n = match p {
@@ -1376,7 +1430,7 @@ pub(crate) fn format_change_item(
                     Player::P2 => 2,
                 };
                 write!(label_buf, "P{} Trig Mode", n).ok();
-                write!(value_buf, "{}", TRIG_MODE_NAMES[cur as usize]).ok();
+                write!(value_buf, "{}", TrigMode::from(cur as u8).display_name()).ok();
             }
             FieldDescriptor::PlayerTrigRainbow(p) => {
                 let n = match p {
@@ -1384,7 +1438,7 @@ pub(crate) fn format_change_item(
                     Player::P2 => 2,
                 };
                 write!(label_buf, "P{} Trig Rainbow", n).ok();
-                write!(value_buf, "{}", RAINBOW_NAMES[cur as usize]).ok();
+                write!(value_buf, "{}", Rainbow::from(cur as u8).display_name()).ok();
             }
             FieldDescriptor::PlayerTrigFdIn(p) => {
                 let n = match p {
@@ -1416,7 +1470,7 @@ pub(crate) fn format_change_item(
                     Player::P2 => 2,
                 };
                 write!(label_buf, "P{} Trig Dir", n).ok();
-                write!(value_buf, "{}", DIR_NAMES[cur as usize]).ok();
+                write!(value_buf, "{}", Direction::from(cur as u8).display_name()).ok();
             }
             FieldDescriptor::PlayerTrigOffset(p) => {
                 let n = match p {
@@ -1424,7 +1478,7 @@ pub(crate) fn format_change_item(
                     Player::P2 => 2,
                 };
                 write!(label_buf, "P{} Trig Off", n).ok();
-                write!(value_buf, "{}", OFFSET_NAMES[cur as usize]).ok();
+                write!(value_buf, "{}", TrigOffset::from(cur as u8).display_name()).ok();
             }
             FieldDescriptor::PlayerTrigDur(p) => {
                 let n = match p {
@@ -1432,7 +1486,7 @@ pub(crate) fn format_change_item(
                     Player::P2 => 2,
                 };
                 write!(label_buf, "P{} Trig Cycle", n).ok();
-                write!(value_buf, "{} s", cur).ok();
+                write!(value_buf, "{} s", cur / 10).ok();
             }
             FieldDescriptor::PlayerBrightness(p) => {
                 let n = match p {

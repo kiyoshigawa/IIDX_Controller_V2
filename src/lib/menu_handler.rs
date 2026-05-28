@@ -28,11 +28,13 @@ use crate::menu_layout::{
     flip_for, key_index, option_line_indices,
 };
 use crate::menu_settings::{
-    BG_MODE_NAMES, DIR_NAMES, FG_MODE_NAMES, OFFSET_NAMES, RAINBOW_NAMES, SettingKey,
-    TRIG_MODE_NAMES, ValueKey, WikiEditState, build_editor, for_each_changed_field,
-    format_change_item, key_name,
+    SettingKey, ValueKey, WikiEditState, build_editor, for_each_changed_field, format_change_item,
+    key_name,
 };
-use crate::{ButtonCode, FlashStoragePersistentMemory, NUM_BUTTONS, OledDisplay, Player};
+use crate::{
+    BgMode, ButtonCode, Direction, FgMode, FlashStoragePersistentMemory, NUM_BUTTONS, OledDisplay,
+    Player, Rainbow, TrigMode, TrigOffset,
+};
 
 /// Default debounce value used when initialising the "All" debounce setting.
 const DEFAULT_BUTTON_DEBOUNCE_TICKS: u64 = 10_000;
@@ -560,10 +562,12 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                     _ => {}
                 },
                 Editor::OptionSelect { labels, current } => match button {
-                    ButtonCode::CcUp | ButtonCode::CcRight => {
+                    // CcUp moves to the *previous* option (decreasing index),
+                    // CcDown moves to the *next* option (increasing index).
+                    ButtonCode::CcDown | ButtonCode::CcRight => {
                         *current = (*current + 1) % labels.len();
                     }
-                    ButtonCode::CcDown | ButtonCode::CcLeft => {
+                    ButtonCode::CcUp | ButtonCode::CcLeft => {
                         *current = (*current + labels.len() - 1) % labels.len();
                     }
                     ButtonCode::CcSelect => {
@@ -1204,19 +1208,19 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 let val = override_val.unwrap_or_else(|| self.read_setting(key));
                 match vk {
                     ValueKey::AllBgMode | ValueKey::PlayerBgMode(_) => {
-                        write!(buf, "{}", BG_MODE_NAMES[val as usize]).unwrap();
+                        write!(buf, "{}", BgMode::from(val as u8).display_name()).unwrap();
                     }
                     ValueKey::AllFgMode | ValueKey::PlayerFgMode(_) => {
-                        write!(buf, "{}", FG_MODE_NAMES[val as usize]).unwrap();
+                        write!(buf, "{}", FgMode::from(val as u8).display_name()).unwrap();
                     }
                     ValueKey::AllTrigMode | ValueKey::PlayerTrigMode(_) => {
-                        write!(buf, "{}", TRIG_MODE_NAMES[val as usize]).unwrap();
+                        write!(buf, "{}", TrigMode::from(val as u8).display_name()).unwrap();
                     }
                     ValueKey::AllTrigDir | ValueKey::PlayerTrigDir(_) => {
-                        write!(buf, "{}", DIR_NAMES[val as usize]).unwrap();
+                        write!(buf, "{}", Direction::from(val as u8).display_name()).unwrap();
                     }
                     ValueKey::AllTrigOffset | ValueKey::PlayerTrigOffset(_) => {
-                        write!(buf, "{}", OFFSET_NAMES[val as usize]).unwrap();
+                        write!(buf, "{}", TrigOffset::from(val as u8).display_name()).unwrap();
                     }
                     ValueKey::AllBgRainbow
                     | ValueKey::PlayerBgRainbow(_)
@@ -1224,7 +1228,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                     | ValueKey::PlayerFgRainbow(_)
                     | ValueKey::AllTrigRainbow
                     | ValueKey::PlayerTrigRainbow(_) => {
-                        write!(buf, "{}", RAINBOW_NAMES[val as usize]).unwrap();
+                        write!(buf, "{}", Rainbow::from(val as u8).display_name()).unwrap();
                     }
                     _ => {
                         let meta = key.meta();
@@ -1461,6 +1465,12 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 self.settings.active_preset = idx as u8;
                 self.settings_changed = true;
                 self.prompt_answered_since_change = false;
+            }
+            MenuAction::DumpPreset => {
+                use crate::lighting_presets::dump_player_config;
+                let lighting = &self.settings.lighting;
+                dump_player_config("P1", &lighting.players[0]);
+                dump_player_config("P2", &lighting.players[1]);
             }
             MenuAction::OpenWikiEdit(encoder) => {
                 let enc_num = match encoder {

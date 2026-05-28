@@ -24,6 +24,7 @@ pub mod input_handler;
 pub mod led_strip;
 pub mod lighting_consts;
 pub mod lighting_handler;
+pub mod lighting_presets;
 pub mod menu_handler;
 pub mod menu_layout;
 pub mod menu_settings;

@@ -93,6 +93,7 @@ pub(crate) enum MenuAction {
     ShowCustom,
     ReturnToCustom(usize),
     ResetField(usize),
+    DumpPreset,
 }
 
 /// One option in a menu screen — a label and the action it triggers.
@@ -567,6 +568,10 @@ pub(crate) static EDIT_CURRENT_MENU: MenuLevel = MenuLevel {
         MenuOption {
             label: "P2",
             action: MenuAction::OpenSubmenu(&P2_MENU),
+        },
+        MenuOption {
+            label: "Dump",
+            action: MenuAction::DumpPreset,
         },
         MenuOption {
             label: "Back",

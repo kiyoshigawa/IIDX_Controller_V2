@@ -8,7 +8,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use rp235x_hal as hal;
 use usbd_human_interface_device::page::Keyboard;
 
-use crate::{NUM_BUTTONS, NUM_ENCODERS};
+use crate::lighting_presets::default_preset;
+use crate::{BgMode, Direction, FgMode, NUM_BUTTONS, NUM_ENCODERS, Rainbow, TrigMode, TrigOffset};
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Flash address layout
@@ -132,7 +133,7 @@ pub struct PlayerAnimConfig {
     pub fg_subdivisions: u8,
     pub fg_speed_ds: u16, // deciseconds
     pub fg_step_ds: u16,  // deciseconds
-    pub fg_px_per_group: u8,
+    pub fg_leds_per_group: u8,
     pub fg_dir: u8, // 0=Positive, 1=Stopped, 2=Negative
 
     // Trigger settings
@@ -140,10 +141,10 @@ pub struct PlayerAnimConfig {
     pub trig_rainbow: u8, // index into RAINBOW_NAMES
     pub trig_fade_in_ms: u16,
     pub trig_fade_out_ms: u16,
-    pub trig_width: u8,
+    pub trig_width_in_leds: u8,
     pub trig_dir: u8,    // starting direction for alternation
     pub trig_offset: u8, // 0=Random, 1=Center, 2=Top
-    pub trig_dur_s: u8,  // trigger cycle duration in seconds
+    pub trig_dur_ds: u8, // trigger cycle duration in deciseconds
 }
 
 /// Lighting configuration stored in flash.
@@ -323,26 +324,26 @@ impl FlashStoragePersistentMemory {
         ];
 
         let p1_default = PlayerAnimConfig {
-            bg_mode: 1,    // Follow
-            bg_rainbow: 0, // Oklch
+            bg_mode: BgMode::Follow as u8,
+            bg_rainbow: Rainbow::Oklch as u8,
             bg_subdivisions: 1,
-            bg_speed_ds: 50, // 5.0 s
-            bg_dir: 0,
-            fg_mode: 0,    // Off
-            fg_rainbow: 4, // RGB
+            bg_speed_ds: 50,
+            bg_dir: Direction::Fwd as u8,
+            fg_mode: FgMode::Off as u8,
+            fg_rainbow: Rainbow::Rgb as u8,
             fg_subdivisions: 1,
-            fg_speed_ds: 50, // 5.0 s
-            fg_step_ds: 4,   // 0.4 s
-            fg_px_per_group: 1,
-            fg_dir: 0,
-            trig_mode: 1,    // Pulse
-            trig_rainbow: 7, // Black
+            fg_speed_ds: 50,
+            fg_step_ds: 4,
+            fg_leds_per_group: 1,
+            fg_dir: Direction::Fwd as u8,
+            trig_mode: TrigMode::Pulse as u8,
+            trig_rainbow: Rainbow::Black as u8,
             trig_fade_in_ms: 100,
             trig_fade_out_ms: 500,
-            trig_width: 3,
-            trig_dir: 0,
-            trig_offset: 0,
-            trig_dur_s: 1,
+            trig_width_in_leds: 3,
+            trig_dir: Direction::Fwd as u8,
+            trig_offset: TrigOffset::Random as u8,
+            trig_dur_ds: 10,
         };
         let players = [p1_default; 2];
         let lighting = LightingConfig {
@@ -350,9 +351,7 @@ impl FlashStoragePersistentMemory {
             brightness: 200,
         };
 
-        // Build the preset array — each preset currently gets the same base default.
-        // In the future, replace arms in default_preset() to import custom lighting
-        // effects per preset slot.
+        // Build the preset array from lighting_presets module.
         let presets = [
             default_preset(0),
             default_preset(1),
@@ -377,48 +376,6 @@ impl FlashStoragePersistentMemory {
             footer: FLASH_FOOTER,
             footer_inv: FLASH_FOOTER_INV,
         }
-    }
-}
-
-/// Returns the default [`LightingConfig`] for a given preset slot index.
-///
-/// Currently all slots return the same base default. When custom lighting effects
-/// are added for specific presets in the future, add match arms here:
-///
-/// ```ignore
-/// match idx {
-///     0 => base,
-///     1 => LightingConfig { players: [p1_custom, p2_custom], brightness: 200 },
-///     _ => base,
-/// }
-/// ```
-pub fn default_preset(idx: usize) -> LightingConfig {
-    let _ = idx; // used by future match arms
-    let p = PlayerAnimConfig {
-        bg_mode: 1,    // Follow
-        bg_rainbow: 0, // Oklch
-        bg_subdivisions: 1,
-        bg_speed_ds: 50, // 5.0 s
-        bg_dir: 0,
-        fg_mode: 0,    // Off
-        fg_rainbow: 4, // RGB
-        fg_subdivisions: 1,
-        fg_speed_ds: 50, // 5.0 s
-        fg_step_ds: 4,   // 0.4 s
-        fg_px_per_group: 1,
-        fg_dir: 0,
-        trig_mode: 1,    // Pulse
-        trig_rainbow: 7, // Black
-        trig_fade_in_ms: 100,
-        trig_fade_out_ms: 500,
-        trig_width: 3,
-        trig_dir: 0,
-        trig_offset: 0,
-        trig_dur_s: 1,
-    };
-    LightingConfig {
-        players: [p; 2],
-        brightness: 200,
     }
 }
 
