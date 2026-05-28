@@ -779,6 +779,8 @@ fn update_encoders(encoders: &mut [EncoderState; NUM_ENCODERS], timer: &Timer<Co
             enc.direction = EncoderDirection::Negative;
             enc.last_move_ticks = now;
         } else if now > (enc.last_move_ticks + enc.move_timeout_ticks) {
+            enc.anchor_count = enc.count;
+            enc.last_move_ticks = now;
             enc.direction = EncoderDirection::Stopped;
         }
     }

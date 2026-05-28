@@ -56,7 +56,7 @@ features = ["defmt"]
 # Lighting controller library for LED strip animations
 [dependencies.lighting_controller]
 git = "https://github.com/kiyoshigawa/lighting_controller"
-version = "0.2.0"
+version = "0.2.1"
 
 # cargo build/run
 [profile.dev]

@@ -90,9 +90,17 @@ impl LightingHandler {
             lc::default_animations::ANI_DEFAULT,
             frame_rate,
         )
-        .set_translation_array(utility::default_translation_array::<LEDS_PER_SIDE>(
-            LEDS_PER_SIDE,
-        ))
+        .set_translation_array({
+            // Reverse the translation so increasing offset produces the same
+            // visual rotation direction as P1 (maps [57, 56, ..., 29]).
+            let mut arr = [0usize; LEDS_PER_SIDE];
+            let mut i = 0;
+            while i < LEDS_PER_SIDE {
+                arr[i] = LEDS_PER_SIDE + (LEDS_PER_SIDE - 1 - i);
+                i += 1;
+            }
+            arr
+        })
         .set_bg_rainbow(rainbow, animations::RainbowDir::Forward)
         .set_bg_subdivisions(2)
         .set_bg_direction(animations::Direction::Negative);
