@@ -29,10 +29,62 @@ pub mod menu_handler;
 pub mod menu_layout;
 pub mod menu_settings;
 
+pub use core::sync::atomic::{AtomicU8, Ordering};
 pub use flash_storage::FLASH_STORAGE_BASE_ADDR;
 pub use flash_storage::{ButtonConfig, EncoderConfig, FlashStoragePersistentMemory};
 pub use flash_storage::{LightingConfig, PlayerAnimConfig};
 pub use lighting_consts::*;
+
+/// Last reset cause, set on boot from the watchdog scratch register.
+/// Read by the menu handler to display on the Reset Reason screen.
+pub static BOOT_RESET_CAUSE: AtomicU8 = AtomicU8::new(0);
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Reset cause tracking — persisted in Watchdog Scratch0 across resets
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Reason for a programmatic system reset, stored in Watchdog Scratch0.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ResetCause {
+    PowerOn = 0,
+    IdleTimeout = 1,
+    SaveAndReboot = 2,
+    FactoryReset = 3,
+    ManualReboot = 4,
+    Core1Hang = 5,
+    WatchdogTimeout = 6,
+    FormatMigration = 7,
+}
+
+impl ResetCause {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::IdleTimeout,
+            2 => Self::SaveAndReboot,
+            3 => Self::FactoryReset,
+            4 => Self::ManualReboot,
+            5 => Self::Core1Hang,
+            6 => Self::WatchdogTimeout,
+            7 => Self::FormatMigration,
+            _ => Self::PowerOn,
+        }
+    }
+
+    /// Short label for OLED display.
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::PowerOn => "PowerOn",
+            Self::IdleTimeout => "IdleTimeout",
+            Self::SaveAndReboot => "Save+Reboot",
+            Self::FactoryReset => "FactoryReset",
+            Self::ManualReboot => "ManualReboot",
+            Self::Core1Hang => "Core1Hang",
+            Self::WatchdogTimeout => "WatchdogT/o",
+            Self::FormatMigration => "FormatMigrate",
+        }
+    }
+}
 
 /// Type alias for the OLED display used throughout this project.
 pub type OledDisplay<D> = Ssd1306<D, DisplaySize128x64, BufferedGraphicsMode<DisplaySize128x64>>;
@@ -73,6 +125,13 @@ pub const CORE1_HEARTBEAT_RATE: u64 = 1_000_000 / 3;
 
 /// Min. time in ticks between LED strip refreshes (~144 Hz).
 pub const LED_FRAME_TICKS: u64 = 6_944;
+
+/// Hardware watchdog timeout in microseconds (2 seconds).
+pub const HW_WATCHDOG_TIMEOUT_US: u32 = 2_000_000;
+
+/// If core1 doesn't update its alive tick within this window (1 second),
+/// core0 assumes core1 is hung and triggers a system reset.
+pub const CORE1_WATCHDOG_TIMEOUT_TICKS: u64 = 1_000_000;
 
 /// Idle timeout for encoder counts. If no input change occurs within this
 /// window, the device performs a system reset.

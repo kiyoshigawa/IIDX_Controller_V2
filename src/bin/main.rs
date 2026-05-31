@@ -17,10 +17,10 @@
 #![no_main]
 
 use core::sync::atomic::Ordering;
-use defmt::info;
+use defmt::{info, warn};
 use defmt_rtt as _;
 use embedded_hal::digital::*;
-use fugit::RateExtU32;
+use fugit::{ExtU32, RateExtU32};
 use panic_probe as _;
 use rp235x_hal::{
     self as hal, Clock,
@@ -49,6 +49,11 @@ use rp235x_hal::gpio::FunctionPio1;
 
 // ── Startup / binary-exclusive statics ──────────────────────────────────────
 
+/// Core1 alive ping — incremented every core1 loop iteration.
+/// Core0 detects a hang by checking whether this counter has advanced within the
+/// CORE1_WATCHDOG_TIMEOUT_TICKS window, using core0's own local timer.
+pub static CORE1_ALIVE_PING: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
 /// stack size for core 1: 32k of our 512k chip memory (with 2MB psram chip available as well)
 static CORE_STACK_1: Stack<32768> = Stack::new();
 
@@ -69,6 +74,27 @@ fn main() -> ! {
     FLASH_PENDING_REBOOT.store(false, Ordering::SeqCst);
     let mut pac = pac::Peripherals::take().unwrap();
     let _core = cortex_m::Peripherals::take().unwrap();
+
+    // ── Decode last reset cause ──
+    // The REASON register tells us if the hardware watchdog fired (TIMER bit).
+    // SYSRESETREQ (SCB::sys_reset()) clears REASON, so FORCE is unreliable for
+    // our deliberate resets. Instead, deliberate resets write the specific cause
+    // to Scratch0 before calling sys_reset(), and Scratch0 persists through warm
+    // resets. If both REASON.TIMER and Scratch0 are 0, it's a power-on reset.
+    let reason = pac.WATCHDOG.reason().read();
+    let scratch0 = pac.WATCHDOG.scratch0().read().bits();
+    let reset_cause = if reason.timer().bit() {
+        ResetCause::WatchdogTimeout
+    } else if scratch0 != 0 {
+        ResetCause::from_u8(scratch0 as u8)
+    } else {
+        ResetCause::PowerOn
+    };
+    BOOT_RESET_CAUSE.store(reset_cause as u8, Ordering::Relaxed);
+    // Clear Scratch0 so the next deliberate reset has a clean slate.
+    pac.WATCHDOG.scratch0().write(|w| unsafe { w.bits(0) });
+    defmt::info!("Boot: last reset cause = {}", reset_cause.display_name());
+
     let mut watchdog = hal::Watchdog::new(pac.WATCHDOG);
     let mut sio = hal::Sio::new(pac.SIO);
     // ADC needs help:
@@ -92,6 +118,10 @@ fn main() -> ! {
     .ok()
     .unwrap();
 
+    // Start the hardware watchdog — auto-resets chip if core0 hangs for 2 seconds.
+    watchdog.start(HW_WATCHDOG_TIMEOUT_US.micros());
+    defmt::info!("Hardware watchdog started ({} us)", HW_WATCHDOG_TIMEOUT_US);
+
     // To reset persistent storage to factory defaults, uncomment the lines below,
     // flash the device, then re-comment and re-flash:
     // unsafe {
@@ -111,14 +141,15 @@ fn main() -> ! {
             // Re-read after cache flush so we see the freshly written data.
             &*(FLASH_STORAGE_BASE_ADDR as *const FlashStoragePersistentMemory)
         } else if !raw.has_valid_layout() {
-            info!("Storage format changed. Rewriting defaults (preserving buttons/encoders)...");
-            let mut defaults = FlashStoragePersistentMemory::default();
-            defaults.header = raw.header;
-            defaults.header_inv = raw.header_inv;
-            defaults.buttons = raw.buttons;
-            defaults.encoders = raw.encoders;
-            write_storage(&defaults);
-            &*(FLASH_STORAGE_BASE_ADDR as *const FlashStoragePersistentMemory)
+            info!("Storage format changed. Writing fresh defaults and rebooting...");
+            write_storage(&FlashStoragePersistentMemory::default());
+            // Deliberate reset so the next boot reads the newly-formatted data
+            // in a clean system state, avoiding stale XIP cache or peripheral state.
+            watchdog.write_scratch(
+                rp235x_hal::watchdog::ScratchRegister::Scratch0,
+                ResetCause::FormatMigration as u32,
+            );
+            cortex_m::peripheral::SCB::sys_reset();
         } else {
             info!("Storage is initialized. Using stored configuration.");
             raw
@@ -530,6 +561,9 @@ fn main() -> ! {
             let mut last_led_update_ticks = 0_u64;
             // core1 loop:
             loop {
+                // Report alive to core0 — increment ping counter every loop.
+                CORE1_ALIVE_PING.fetch_add(1, Ordering::Relaxed);
+
                 // core1 heartbeat blink:
                 if timer.get_counter().ticks() > (last_core1_heartbeat_tick + CORE1_HEARTBEAT_RATE)
                 {
@@ -582,6 +616,10 @@ fn main() -> ! {
 
                 // If the user confirmed save & reboot, persist settings and reset.
                 if input_handler.menu_handler.pending_reboot {
+                    // Write reset cause before resetting.
+                    let wd = unsafe { &*hal::pac::WATCHDOG::ptr() };
+                    wd.scratch0()
+                        .write(|w| unsafe { w.bits(ResetCause::SaveAndReboot as u32) });
                     cortex_m::peripheral::SCB::sys_reset();
                 }
 
@@ -598,9 +636,14 @@ fn main() -> ! {
     let mut last_usb_tick_ticks = 0_u64;
     let mut last_usb_key_state_send_ticks = 0_u64;
     let mut last_button_update_ticks = 0_u64;
+    let mut last_core1_ping = 0_u32;
+    let mut last_core1_ping_time = 0_u64;
 
     // core0 loop:
     loop {
+        // Feed hardware watchdog — if we hang, the watchdog resets the chip.
+        watchdog.feed();
+
         // core0 heartbeat blink:
         if timer.get_counter().ticks() > (last_core0_heartbeat_tick + CORE0_HEARTBEAT_RATE) {
             heartbeat_led_pin_core0.toggle().unwrap();
@@ -617,8 +660,31 @@ fn main() -> ! {
             FLASH_CORE0_READY.store(false, Ordering::SeqCst);
         }
 
+        // Sample the current tick once for all timeout checks below.
+        let now = timer.get_counter().ticks();
+
+        // Check core1 alive ping — if the counter hasn't advanced within the timeout
+        // window, core1 is presumed hung and we reset the chip.
+        let ping = CORE1_ALIVE_PING.load(Ordering::Relaxed);
+        if ping != last_core1_ping {
+            last_core1_ping = ping;
+            last_core1_ping_time = now;
+        } else if now.wrapping_sub(last_core1_ping_time) >= CORE1_WATCHDOG_TIMEOUT_TICKS {
+            watchdog.write_scratch(
+                rp235x_hal::watchdog::ScratchRegister::Scratch0,
+                ResetCause::Core1Hang as u32,
+            );
+            defmt::info!("Core1 watchdog expired, resetting...");
+            cortex_m::peripheral::SCB::sys_reset();
+        }
+
         // If core1 has written flash and requested a reboot, do it here (core0 can sys_reset).
         if FLASH_PENDING_REBOOT.load(Ordering::SeqCst) {
+            let menu_cause = ResetCause::from_u8(PENDING_RESET_CAUSE.load(Ordering::SeqCst));
+            watchdog.write_scratch(
+                rp235x_hal::watchdog::ScratchRegister::Scratch0,
+                menu_cause as u32,
+            );
             cortex_m::peripheral::SCB::sys_reset();
         }
 
@@ -644,14 +710,18 @@ fn main() -> ! {
         // clear them ourselves. The easiest way I found to do this is to reset the chip after
         // the idle timeout.
         if timer.get_counter().ticks() > (last_button_update_ticks + IDLE_RESET_TIMEOUT_TICKS) {
+            watchdog.write_scratch(
+                rp235x_hal::watchdog::ScratchRegister::Scratch0,
+                ResetCause::IdleTimeout as u32,
+            );
+            defmt::info!("Idle timeout reached, resetting...");
             cortex_m::peripheral::SCB::sys_reset();
         }
 
-        // send core0 data to core1 if it has room:
-        let fifo_is_empty = (sio.fifo.status() & 0b1) == 0;
-        // Bit 0 VLD: Value is 1 if this core's RX FIFO is not empty (i.e. if FIFO_RD is valid) - RP235x datasheet pg. 67
-        // These values are manually hardcoded. If you change something that effects them, you need to also fix things here.
-        if fifo_is_empty {
+        // send core0 data to core1 if the TX FIFO has room:
+        // Bit 1 RDY: Value is 1 if this core's TX FIFO is not full (i.e. if FIFO_WR is ready) - RP235x datasheet pg. 67
+        // We only write when the FIFO has space, to avoid silently dropping data.
+        if (sio.fifo.status() & 0b10) != 0 {
             let packed_current_button_state =
                 add_header_to_word(CURRENT_BUTTON_STATE_HEADER, current_button_state);
             let packed_encoder_p1_count = add_header_to_word(
@@ -679,7 +749,7 @@ fn main() -> ! {
                 Err(UsbHidError::WouldBlock) => {}
                 Ok(_) => {}
                 Err(e) => {
-                    core::panic!("Failed to process keyboard tick: {:?}", e)
+                    warn!("USB tick error: {:?}", e)
                 }
             };
         }
@@ -699,7 +769,7 @@ fn main() -> ! {
                 Err(UsbHidError::Duplicate) => {}
                 Ok(_) => {}
                 Err(e) => {
-                    core::panic!("Failed to write keyboard report: {:?}", e)
+                    warn!("USB write report error: {:?}", e)
                 }
             }
         }
@@ -709,7 +779,7 @@ fn main() -> ! {
             match keyboard.device().read_report() {
                 Err(UsbError::WouldBlock) => {}
                 Err(e) => {
-                    core::panic!("Failed to read keyboard report: {:?}", e)
+                    warn!("USB read report error: {:?}", e)
                 }
                 Ok(_leds) => {}
             }

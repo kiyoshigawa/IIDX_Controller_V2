@@ -4,12 +4,12 @@
 //! its constituent config types, and the low-level `write_storage` / `clear_storage`
 //! functions that program the on-chip flash via the RP2350's rom_data API.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use rp235x_hal as hal;
 use usbd_human_interface_device::page::Keyboard;
 
 use crate::lighting_presets::default_preset;
-use crate::{BgMode, Direction, FgMode, NUM_BUTTONS, NUM_ENCODERS, Rainbow, TrigMode, TrigOffset};
+use crate::{NUM_BUTTONS, NUM_ENCODERS};
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Flash address layout
@@ -66,6 +66,11 @@ pub static FLASH_CORE1_READY: AtomicBool = AtomicBool::new(false);
 /// Core0 checks this flag after exiting the safe loop.
 pub static FLASH_PENDING_REBOOT: AtomicBool = AtomicBool::new(false);
 
+/// Communicates the specific reset cause from core1 (menu handler) to core0.
+/// Written by core1 before setting FLASH_PENDING_REBOOT; read by core0 when
+/// FLASH_PENDING_REBOOT is detected.
+pub static PENDING_RESET_CAUSE: AtomicU8 = AtomicU8::new(0);
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Default encoder timing constants (only used by FlashStoragePersistentMemory)
 // ──────────────────────────────────────────────────────────────────────────────
@@ -77,10 +82,10 @@ const DEFAULT_BUTTON_DEBOUNCE_TICKS: u64 = 10_000;
 const DEFAULT_ENCODER_DEBOUNCE_TICKS: u64 = 1_000;
 
 /// Default minimum encoder delta before direction registers (hysteresis threshold).
-const DEFAULT_ENCODER_STEP_THRESHOLD: i32 = 20;
+const DEFAULT_ENCODER_STEP_THRESHOLD: i32 = 10;
 
-/// Default timer ticks of inactivity before releasing the turntable key (100 ms).
-const DEFAULT_ENCODER_MOVE_TIMEOUT_TICKS: u64 = 100_000;
+/// Default timer ticks of inactivity before releasing the turntable key (75 ms).
+const DEFAULT_ENCODER_MOVE_TIMEOUT_TICKS: u64 = 75_000;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Configuration structs (mirrored in flash)
@@ -323,35 +328,9 @@ impl FlashStoragePersistentMemory {
             },
         ];
 
-        let p1_default = PlayerAnimConfig {
-            bg_mode: BgMode::Follow as u8,
-            bg_rainbow: Rainbow::Oklch as u8,
-            bg_subdivisions: 1,
-            bg_speed_ds: 50,
-            bg_dir: Direction::Fwd as u8,
-            fg_mode: FgMode::Off as u8,
-            fg_rainbow: Rainbow::Rgb as u8,
-            fg_subdivisions: 1,
-            fg_speed_ds: 50,
-            fg_step_ds: 4,
-            fg_leds_per_group: 1,
-            fg_dir: Direction::Fwd as u8,
-            trig_mode: TrigMode::Pulse as u8,
-            trig_rainbow: Rainbow::Black as u8,
-            trig_fade_in_ms: 100,
-            trig_fade_out_ms: 500,
-            trig_width_in_leds: 3,
-            trig_dir: Direction::Fwd as u8,
-            trig_offset: TrigOffset::Random as u8,
-            trig_dur_ds: 10,
-        };
-        let players = [p1_default; 2];
-        let lighting = LightingConfig {
-            players,
-            brightness: 200,
-        };
-
         // Build the preset array from lighting_presets module.
+        // Preset 0 also serves as the default active lighting configuration
+        // so that "Show Custom" comparisons are consistent with the preset consts.
         let presets = [
             default_preset(0),
             default_preset(1),
@@ -364,6 +343,7 @@ impl FlashStoragePersistentMemory {
             default_preset(8),
             default_preset(9),
         ];
+        let lighting = presets[0];
 
         Self {
             header: FLASH_HEADER,

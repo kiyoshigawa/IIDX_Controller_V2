@@ -21,6 +21,7 @@ use embedded_graphics::{
     text::{Alignment, Baseline, Text},
 };
 
+use crate::BOOT_RESET_CAUSE;
 use crate::menu_layout::MenuOption;
 use crate::menu_layout::{
     Commit, Editor, Flip, FmtBuf, MAX_MENU_DEPTH, MenuAction, MenuEvents, MenuLevel, MenuMode,
@@ -33,7 +34,7 @@ use crate::menu_settings::{
 };
 use crate::{
     BgMode, ButtonCode, Direction, FgMode, FlashStoragePersistentMemory, NUM_BUTTONS, OledDisplay,
-    Player, Rainbow, TrigMode, TrigOffset,
+    Player, Rainbow, ResetCause, TrigMode, TrigOffset,
 };
 
 /// Default debounce value used when initialising the "All" debounce setting.
@@ -204,6 +205,8 @@ enum MenuSubState {
     ShowCustom {
         cursor: usize,
     },
+    /// Read-only screen showing the last reset cause.
+    ResetReason,
 }
 
 /// Drives the SSD1306 OLED display and menu logic for the IIDX deck.
@@ -353,6 +356,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 let wiki_state = *w;
                 self.on_wiki_press(&wiki_state, button);
             }
+            MenuSubState::ResetReason => self.on_reset_reason_press(button),
         }
     }
 
@@ -361,6 +365,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             MenuSubState::IdleMode => self.on_idle_long_press(button),
             MenuSubState::DisplayMode(MenuMode::Debug) => self.on_debug_long_press(button),
             MenuSubState::DisplayMode(MenuMode::PixelTest) => self.on_pixel_long_press(button),
+            MenuSubState::ResetReason => {}
             MenuSubState::Prompt { .. } => {} // press-and-hold must not re-trigger prompt selection
             MenuSubState::ShowCustom { .. } => {
                 self.process_event(MenuEvents::Press(button));
@@ -372,6 +377,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
     fn dispatch_repeat(&mut self, button: ButtonCode) {
         match self.state {
             MenuSubState::Prompt { .. } => {} // repeat must not re-trigger prompt selection
+            MenuSubState::ResetReason => {}
             MenuSubState::ShowCustom { .. } => {
                 self.process_event(MenuEvents::Press(button));
             }
@@ -492,6 +498,20 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
     fn on_pixel_press(&mut self, _button: ButtonCode) {
         debug!("menu: exit pixel test");
         self.state = MenuSubState::Browsing;
+    }
+
+    fn on_reset_reason_press(&mut self, button: ButtonCode) {
+        if matches!(
+            button,
+            ButtonCode::CcUp
+                | ButtonCode::CcDown
+                | ButtonCode::CcLeft
+                | ButtonCode::CcRight
+                | ButtonCode::CcSelect
+        ) {
+            debug!("menu: exit reset reason");
+            self.state = MenuSubState::Browsing;
+        }
     }
 
     fn on_browsing_press(&mut self, button: ButtonCode) {
@@ -801,6 +821,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             MenuSubState::Editing { .. } => self.render_editing_screen(),
             MenuSubState::EditingKeyBinding { .. } => self.render_keybinding_screen(),
             MenuSubState::WikiEdit(w) => self.render_wiki_edit(&w),
+            MenuSubState::ResetReason => self.render_reset_reason(),
         }
     }
 
@@ -928,8 +949,8 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             let box_left = 123 - vlen;
             let box_left = if box_left < 0 { 0 } else { box_left };
             Rectangle::new(
-                Point::new(box_left, LINE_Y_LABELED[value_slot] + 1),
-                Size::new((DISPLAY_R - box_left) as u32, 10),
+                Point::new(box_left, LINE_Y_LABELED[value_slot] - 1),
+                Size::new((DISPLAY_R - box_left) as u32, 12),
             )
             .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
             .draw(self.display)
@@ -1472,6 +1493,10 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
                 dump_player_config("P1", &lighting.players[0]);
                 dump_player_config("P2", &lighting.players[1]);
             }
+            MenuAction::ShowResetReason => {
+                debug!("menu: reset reason screen");
+                self.state = MenuSubState::ResetReason;
+            }
             MenuAction::OpenWikiEdit(encoder) => {
                 let enc_num = match encoder {
                     Player::P1 => 1,
@@ -1492,6 +1517,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             MenuAction::SaveAndReboot => {
                 use crate::flash_storage::*;
                 self.show_rebooting_screen();
+                PENDING_RESET_CAUSE.store(ResetCause::SaveAndReboot as u8, Ordering::SeqCst);
                 // Signal both cores to enter a safe RAM spin-loop.
                 FLASH_PREPARE_FLAG.store(true, Ordering::SeqCst);
                 // Wait for core0 to acknowledge it's spinning.
@@ -1527,6 +1553,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             MenuAction::PerformReset => {
                 use crate::flash_storage::*;
                 self.show_rebooting_screen();
+                PENDING_RESET_CAUSE.store(ResetCause::FactoryReset as u8, Ordering::SeqCst);
                 FLASH_PREPARE_FLAG.store(true, Ordering::SeqCst);
                 while !FLASH_CORE0_READY.load(Ordering::SeqCst) {
                     core::hint::spin_loop();
@@ -1543,6 +1570,7 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             MenuAction::Reboot => {
                 use crate::flash_storage::*;
                 self.show_rebooting_screen();
+                PENDING_RESET_CAUSE.store(ResetCause::ManualReboot as u8, Ordering::SeqCst);
                 FLASH_PENDING_REBOOT.store(true, Ordering::SeqCst);
                 loop {
                     core::hint::spin_loop();
@@ -1622,6 +1650,36 @@ impl<'a, D: WriteOnlyDataCommand> MenuHandler<'a, D> {
             let settings = unsafe { &*settings_ptr };
             format_change_item(settings, &defaults, idx, label, value);
         });
+    }
+
+    /// Render the read-only Reset Reason screen.
+    fn render_reset_reason(&mut self) {
+        let cause = ResetCause::from_u8(BOOT_RESET_CAUSE.load(Ordering::Relaxed));
+        self.display.clear(BinaryColor::Off).unwrap();
+        Text::with_baseline(
+            "Reset Reason",
+            Point::new(0, LINE_Y[0]),
+            self.text_style,
+            Baseline::Top,
+        )
+        .draw(self.display)
+        .unwrap();
+        Line::new(
+            Point::new(0, LINE_Y[0] + 16),
+            Point::new(DISPLAY_R, LINE_Y[0] + 16),
+        )
+        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+        .draw(self.display)
+        .unwrap();
+        Text::with_baseline(
+            cause.display_name(),
+            Point::new(0, LINE_Y[2]),
+            self.text_style,
+            Baseline::Top,
+        )
+        .draw(self.display)
+        .unwrap();
+        self.display.flush().unwrap();
     }
 
     /// Display \"Rebooting...\" on the OLED before a system reset.

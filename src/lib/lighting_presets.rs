@@ -36,7 +36,7 @@ pub const PRESET_0_P1: PlayerAnimConfig = PlayerAnimConfig {
 pub const PRESET_0_P2: PlayerAnimConfig = PlayerAnimConfig {
     bg_mode: BgMode::Follow as u8,
     bg_rainbow: Rainbow::Oklch as u8,
-    bg_subdivisions: 1,
+    bg_subdivisions: 2,
     bg_speed_ds: 50,
     bg_dir: Direction::Fwd as u8,
     fg_mode: FgMode::Off as u8,

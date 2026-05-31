@@ -94,6 +94,8 @@ pub(crate) enum MenuAction {
     ReturnToCustom(usize),
     ResetField(usize),
     DumpPreset,
+    /// Display the last reset cause on screen.
+    ShowResetReason,
 }
 
 /// One option in a menu screen — a label and the action it triggers.
@@ -399,12 +401,12 @@ pub(crate) static ROOT_MENU: MenuLevel = MenuLevel {
             action: MenuAction::OpenSubmenu(&LIGHTING_MENU),
         },
         MenuOption {
-            label: "Debug",
-            action: MenuAction::OpenSubmenu(&DEBUG_MENU),
-        },
-        MenuOption {
             label: "Settings",
             action: MenuAction::OpenSubmenu(&SETTINGS_MENU),
+        },
+        MenuOption {
+            label: "Debug",
+            action: MenuAction::OpenSubmenu(&DEBUG_MENU),
         },
         MenuOption {
             label: "System",
@@ -445,6 +447,10 @@ pub(crate) static DEBUG_MENU: MenuLevel = MenuLevel {
         MenuOption {
             label: "Pixel Test",
             action: MenuAction::ShowPixelTest,
+        },
+        MenuOption {
+            label: "Reset Reason",
+            action: MenuAction::ShowResetReason,
         },
         MenuOption {
             label: "Back",
